@@ -1,0 +1,53 @@
+{
+  "server": {
+    "port": 4000,
+    "host": "127.0.0.1"
+  },
+  "models": {
+    "routes": [
+      {
+        "name": "glm-4.5-flash",
+        "provider": "zhipu",
+        "api_base": "https://open.bigmodel.cn/api/paas/v4",
+        "api_key": "${ZHIPU_API_KEY}",
+        "model_id": "glm-4.5-flash"
+      },
+      {
+        "name": "glm-4.7",
+        "provider": "zhipu",
+        "api_base": "https://open.bigmodel.cn/api/coding/paas/v4",
+        "api_key": "${ZHIPU_API_KEY}",
+        "model_id": "glm-4.7"
+      }
+    ],
+    "default": "glm-4.5-flash"
+  },
+  "skvm": {
+    "cache_dir": "~/.skvm"
+  },
+  "policy": {
+    "enabled": true,
+    "observe_only": false,
+    "deny": {
+      "tools": []
+    },
+    "nanobot_policy": {
+      "enabled": true,
+      "exec_deny_patterns": ["rm -rf", "DROP TABLE", "DELETE FROM", "format ", "mkfs", "dd if="]
+    }
+  },
+  "taint": {
+    "enabled": true
+  },
+  "adapters": {
+    "bare_agent": {
+      "enabled": true
+    },
+    "openclaw": {
+      "enabled": true
+    }
+  },
+  "security": {
+    "security_dir": "~/.skvm/security"
+  }
+}

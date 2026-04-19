@@ -1,0 +1,5 @@
+export { PathRegistry } from "./path-registry.ts"
+export { computePropTaint, computePropTaintForInstruction } from "./propagation.ts"
+export type { PropTaintResult } from "./propagation.ts"
+export { ToolAliasMapper } from "./tool-aliases.ts"
+export { TaintTracker } from "./tracker.ts"

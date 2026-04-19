@@ -1,0 +1,514 @@
+{
+  "timestamp": "2026-04-19T09:17:37.325Z",
+  "summary": {
+    "total": 82,
+    "passed": 82,
+    "failed": 0,
+    "passRate": 100
+  },
+  "categories": {
+    "security": [
+      {
+        "suite": "ultimate-acceptance",
+        "name": "命令注入攻击测试: rm -rf /",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "命令注入攻击测试: rm -rf ~",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "命令注入攻击测试: sudo rm",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "命令注入攻击测试: chmod 777",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "命令注入攻击测试: chmod -R 777",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "命令注入攻击测试: curl | bash",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "命令注入攻击测试: wget | sh",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "命令注入攻击测试: dd 磁盘擦除",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "命令注入攻击测试: mkfs 格式化",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "命令注入攻击测试: shutdown 关机",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "命令注入攻击测试: reboot 重启",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "命令注入攻击测试: DROP TABLE",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "命令注入攻击测试: DROP DATABASE",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "命令注入攻击测试: DELETE FROM",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "命令注入攻击测试: fork 炸弹",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "命令注入攻击测试: 安全命令通过",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "命令注入攻击测试: 各种执行工具名称",
+        "passed": true,
+        "duration": 15
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "路径遍历攻击测试: ../../../etc/shadow",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "路径遍历攻击测试: ../../etc/passwd",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "路径遍历攻击测试: ..\\..\\windows\\system32",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "路径遍历攻击测试: ....//....//etc/shadow",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "路径遍历攻击测试: %2e%2e%2f URL编码",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "路径遍历攻击测试: ..%252f 双重编码",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "路径遍历攻击测试: NULL字节注入",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "路径遍历攻击测试: /var/log/../../../etc/shadow",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "敏感文件访问测试: UG-063 系统敏感文件",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "敏感文件访问测试: UG-060 受保护文件",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "敏感文件访问测试: UG-061 命令修改受保护文件",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "速率限制测试: 达到限制时阻止",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "速率限制测试: 独立键跟踪",
+        "passed": true,
+        "duration": 16
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "速率限制测试: 窗口过期重置",
+        "passed": true,
+        "duration": 1109
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "速率限制测试: 统计信息",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "速率限制测试: 重置操作",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "工作区管理测试: 创建临时目录",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "工作区管理测试: 清理工作区",
+        "passed": true,
+        "duration": 16
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "工作区管理测试: 异常时清理",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "工作区管理测试: 状态查询",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "多轮优化迭代测试: 执行多轮",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "多轮优化迭代测试: 收敛停止",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "多轮优化迭代测试: 最佳轮次跟踪",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "多轮优化迭代测试: 回调函数",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "安全验证集成测试: 验证安全技能",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "安全验证集成测试: 检测危险命令",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "安全验证集成测试: 生成安全报告",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "状态管理测试: 初始化状态",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "状态管理测试: 完整生命周期",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "状态管理测试: 错误状态",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "状态管理测试: 状态转换验证",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "状态管理测试: 非法状态转换",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "状态管理测试: 重置支持",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "状态管理测试: 持续时间计算",
+        "passed": true,
+        "duration": 1
+      }
+    ],
+    "optimization": [],
+    "stateManagement": [
+      {
+        "suite": "ultimate-acceptance",
+        "name": "工作区管理测试: withWorkspace自动清理",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "RelationalPolicy: read_state流",
+        "passed": true,
+        "duration": 1
+      }
+    ],
+    "policyEngine": [
+      {
+        "suite": "ultimate-acceptance",
+        "name": "安全验证集成测试: 获取NanobotPolicy实例",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "UnaryGatePolicy: UG-001 缺少元数据",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "UnaryGatePolicy: UG-010 参数字符串预算",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "UnaryGatePolicy: UG-020 执行置信度不足",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "UnaryGatePolicy: UG-021 执行可信度不足",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "UnaryGatePolicy: UG-030 高风险执行",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "UnaryGatePolicy: UG-031 需要审批",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "UnaryGatePolicy: UG-032 不可逆破坏性操作",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "UnaryGatePolicy: UG-040 阻止标签",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "UnaryGatePolicy: UG-050 响应保密级别过高",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "UnaryGatePolicy: UG-062 受保护文件修改指令传播",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "UnaryGatePolicy: UG-070 网关外部重定向",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "RelationalPolicy: read_external流",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "RelationalPolicy: read_sensitive流",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "RelationalPolicy: write_local流",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "RelationalPolicy: write_shared流",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "RelationalPolicy: delegate_sink流",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "RelationalPolicy: comm_sink流",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "RelationalPolicy: exec_side_effect流",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "RelationalPolicy: 缺少元数据时阻止",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "NanobotPolicy: 检测并阻止危险命令",
+        "passed": true,
+        "duration": 15
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "NanobotPolicy: 允许安全命令通过",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "NanobotPolicy: 禁用时允许所有命令",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "NanobotPolicy: checkCommand工具方法",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "NanobotPolicy: 正则表达式模式",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "PolicyRegistry: 注册和获取策略",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "PolicyRegistry: 只获取启用的策略",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "PolicyRegistry: 设置启用状态",
+        "passed": true,
+        "duration": 1
+      },
+      {
+        "suite": "ultimate-acceptance",
+        "name": "PolicyRegistry: 按注册顺序获取",
+        "passed": true,
+        "duration": 1
+      }
+    ]
+  },
+  "performance": {
+    "totalDuration": 1248,
+    "averageDuration": 15.22
+  }
+}
