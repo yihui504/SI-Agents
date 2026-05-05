@@ -8,6 +8,33 @@ import { LiteLLMImporter } from "../../config/litellm-import.ts"
 import type { SIAgentsConfig } from "../../types/config.ts"
 import { expandPath } from "../../utils/path.ts"
 
+const SENSITIVE_KEY_PATTERNS = [
+  /api[_-]?key/i,
+  /secret/i,
+  /password/i,
+  /token/i,
+  /credential/i,
+  /private[_-]?key/i,
+]
+
+function redactSensitiveFields(obj: unknown): unknown {
+  if (obj === null || obj === undefined) return obj
+  if (typeof obj === "string") return obj
+  if (Array.isArray(obj)) return obj.map(redactSensitiveFields)
+  if (typeof obj === "object") {
+    const result: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+      if (SENSITIVE_KEY_PATTERNS.some((p) => p.test(key)) && typeof value === "string") {
+        result[key] = value ? "***REDACTED***" : value
+      } else {
+        result[key] = redactSensitiveFields(value)
+      }
+    }
+    return result
+  }
+  return obj
+}
+
 async function showConfig(configPath: string): Promise<void> {
   const expandedPath = expandPath(configPath)
   if (!existsSync(expandedPath)) {
@@ -18,7 +45,7 @@ async function showConfig(configPath: string): Promise<void> {
   try {
     const content = await readFile(expandedPath, "utf-8")
     const config = JSON.parse(content)
-    console.log(JSON.stringify(config, null, 2))
+    console.log(JSON.stringify(redactSensitiveFields(config), null, 2))
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)
     console.error(`读取配置文件失败: ${message}`)
