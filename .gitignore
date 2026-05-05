@@ -25,6 +25,18 @@ coverage/
 .env
 .env.local
 .env.*.local
+.env.production
+.env.staging
+
+# Secrets & credentials
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+credentials.json
+service-account*.json
+secrets.json
 
 # Logs
 *.log

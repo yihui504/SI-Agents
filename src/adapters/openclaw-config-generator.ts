@@ -41,6 +41,12 @@ export interface OpenClawFullConfig {
 }
 
 export class OpenClawConfigGenerator {
+  private proxyApiKey: string
+
+  constructor(proxyApiKey?: string) {
+    this.proxyApiKey = proxyApiKey ?? process.env.SI_AGENTS_PROXY_API_KEY ?? "si-agents-proxy"
+  }
+
   generateConfig(params: {
     proxyUrl: string
     proxyPort: number
@@ -54,7 +60,7 @@ export class OpenClawConfigGenerator {
     return {
       provider: providerName,
       baseUrl,
-      apiKey: "si-agents-proxy",
+      apiKey: this.proxyApiKey,
       models: [
         {
           id: modelName,
@@ -105,7 +111,7 @@ export class OpenClawConfigGenerator {
         providers: {
           [providerName]: {
             baseUrl,
-            apiKey: "si-agents-proxy",
+            apiKey: this.proxyApiKey,
             api: "openai-completions",
             models: modelConfigs,
           },
@@ -151,7 +157,7 @@ export class OpenClawConfigGenerator {
     const snippet = {
       [providerName]: {
         baseUrl,
-        apiKey: "si-agents-proxy",
+        apiKey: this.proxyApiKey,
         api: "openai-completions",
         models: modelConfigs,
       },
@@ -186,7 +192,7 @@ export class OpenClawConfigGenerator {
 
     return {
       OPENAI_API_BASE: `${baseUrl}/v1`,
-      OPENAI_API_KEY: "si-agents-proxy",
+      OPENAI_API_KEY: this.proxyApiKey,
       SI_AGENTS_PROXY_URL: baseUrl,
     }
   }
