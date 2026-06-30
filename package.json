@@ -1,6 +1,8 @@
 {
   "name": "@si-agents/core",
-  "version": "0.1.0",
+  "version": "0.2.0",
+  "license": "MIT",
+  "author": "yihui504",
   "type": "module",
   "bin": {
     "si-agents": "./bin/si-agents.ts"

@@ -9,6 +9,7 @@ import type {
   AfterToolContext as BaseAfterToolContext,
   AfterRunContext as BaseAfterRunContext,
 } from "../types/hooks.ts"
+import type { SSRFGuardConfig } from "../utils/ssrf-guard.ts"
 
 export type {
   RuntimeHooks,
@@ -22,6 +23,8 @@ export interface AdapterConfig {
   baseUrl?: string
   maxSteps?: number
   timeoutMs?: number
+  modelPricing?: Record<string, { inputPrice: number; outputPrice: number }>
+  ssrfGuard?: Partial<SSRFGuardConfig>
 }
 
 export interface AgentAdapter {
@@ -58,7 +61,7 @@ export interface AdapterRunConfig {
 
 export type SkillMode = "inject" | "discover"
 
-export type RunStatus = "ok" | "timeout" | "adapter-crashed" | "policy-blocked"
+export type RunStatus = "ok" | "timeout" | "adapter-crashed" | "policy-blocked" | "policy-retry-exceeded"
 
 export interface AdapterRunResult {
   text: string

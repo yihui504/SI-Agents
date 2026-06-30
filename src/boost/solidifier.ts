@@ -15,7 +15,7 @@ import { BoostSecurityAuditor } from "./security-audit.ts"
 
 const DEFAULT_PROMOTION_THRESHOLD = 3
 const DEFAULT_DEMOTION_THRESHOLD = 3
-const DEFAULT_MONITORED_TOOLS = new Set(["exec", "execute_command", "write", "write_file", "web_fetch"])
+const DEFAULT_MONITORED_TOOLS = new Set(["exec", "execute_command", "write", "write_file", "web_fetch", "list_directory", "read", "read_file"])
 
 export interface SolidifierConfig {
   skillId: string
@@ -160,7 +160,6 @@ export class Solidifier {
               }
             }
           } catch {
-            // Invalid regex, skip
           }
         }
       }
@@ -331,6 +330,16 @@ export class Solidifier {
         tc !== null && typeof tc === "object" && "tool_name" in tc
       )
     }
+    const tcs2 = response.toolCalls
+    if (Array.isArray(tcs2)) {
+      return tcs2.filter((tc): tc is Record<string, unknown> =>
+        tc !== null && typeof tc === "object" && "name" in tc
+      ).map((tc) => ({
+        tool_name: tc.name as string,
+        tool_call_id: tc.id as string,
+        arguments: tc.arguments as Record<string, unknown>,
+      }))
+    }
     return []
   }
 
@@ -341,6 +350,10 @@ export class Solidifier {
     }
     if (name === "write" || name === "write_file") {
       return (tc.arguments.content as string) ?? ""
+    }
+    if (name === "list_directory" || name === "read" || name === "read_file") {
+      const pathContent = [tc.arguments.path, tc.arguments.directory, tc.arguments.file_path].filter(Boolean).join(" ")
+      return `${tc.tool_name} ${pathContent}`
     }
     return JSON.stringify(tc.arguments)
   }

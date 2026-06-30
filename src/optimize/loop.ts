@@ -67,6 +67,7 @@ export class OptimizationLoop {
   private rounds: OptimizeRound[] = []
   private bestRound: number = 0
   private bestScore: number = 0
+  private currentSkillDir: string = ""
   private stopped: boolean = false
   private stopReason?: "converged" | "security_failure" | "max_rounds"
 
@@ -85,7 +86,8 @@ export class OptimizationLoop {
    * Run the optimization loop
    * @returns The final optimization result
    */
-  async run(): Promise<OptimizeResult> {
+  async run(skillDir: string): Promise<OptimizeResult> {
+    this.currentSkillDir = skillDir
     this.rounds = []
     this.bestRound = 0
     this.bestScore = 0
@@ -97,7 +99,7 @@ export class OptimizationLoop {
         break
       }
 
-      const roundResult = await this.executeRound(round)
+      const roundResult = await this.executeRound(round, skillDir)
       this.rounds.push(roundResult)
 
       // Notify callback
@@ -151,8 +153,8 @@ export class OptimizationLoop {
   /**
    * Execute a single optimization round
    */
-  private async executeRound(round: number): Promise<OptimizeRound & { verifyResult?: VerifyResult }> {
-    // Get previous rounds for context
+  private async executeRound(round: number, skillDir: string): Promise<OptimizeRound & { verifyResult?: VerifyResult }> {
+    this.currentSkillDir = skillDir
     const previousRounds = this.rounds.filter((r) => r.round < round)
 
     // Run the optimizer for this round
@@ -180,12 +182,9 @@ export class OptimizationLoop {
    */
   private async runSecurityVerification(round: number): Promise<VerifyResult | null> {
     try {
-      // For the loop, we verify against the original baseline
-      // The actual implementation would need the optimized skill directory
-      // This is a simplified version that can be extended
       const result = await this.verifier.verify(
         this.originalBaseline,
-        this.originalBaseline as SecurityBaseline, // Placeholder - actual implementation would use optimized baseline
+        this.currentSkillDir,
       )
       return result
     } catch {

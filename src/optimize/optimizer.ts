@@ -9,6 +9,7 @@ import type {
   SecurityConstraint,
   OptimizeSubmission,
   OptimizationChange,
+  HeadlessAgent,
   HeadlessAgentConfig,
   HeadlessAgentResult,
 } from "./types.ts"
@@ -24,12 +25,14 @@ export class SkillOptimizer {
   private originalBaseline: SecurityBaseline | null = null
   private constraints: SecurityConstraint
   private rounds: OptimizeRound[] = []
+  private headlessAgent: HeadlessAgent | null
 
   constructor(private config: OptimizeConfig) {
     this.scanner = new SkillSecurityScanner()
     this.injector = new SecurityConstraintInjector()
     this.verifier = new OptimizeSecurityVerifier(this.scanner, this.injector)
     this.constraints = config.securityConstraints ?? DEFAULT_SECURITY_CONSTRAINT
+    this.headlessAgent = config.headlessAgent ?? null
   }
 
   async optimize(): Promise<OptimizeResult> {
@@ -133,7 +136,9 @@ export class SkillOptimizer {
       timeoutMs: 600_000,
     }
 
-    const result = await this.runHeadlessAgent(agentConfig)
+    const result = this.headlessAgent
+      ? await this.headlessAgent.run(agentConfig)
+      : await this.runHeadlessAgent(agentConfig)
 
     const submission = this.parseSubmission(result.rawStdout)
 

@@ -1,9 +1,38 @@
 import path from "node:path"
+import { readFileSync } from "node:fs"
 import type { PolicyCheckResult, RuleDecision } from "../types/policy.ts"
 import { LEVEL_ORDER } from "../types/instruction.ts"
 import { Policy } from "./policy.ts"
+import { audit } from "../hooks/structured-audit.ts"
+import {
+  _safeStr,
+  _safeUpper,
+  _safeLower,
+  _safeLevel,
+  _levelRank,
+  _levelAtLeast,
+  _safeDict,
+  _normList,
+  _normSet,
+  extractToolCalls,
+  parseToolCall,
+  writeBackToolArgs,
+  _appendUniqueError,
+  DEFAULT_RULE_DETAILS_URL,
+} from "./policy-utils.ts"
 
-const RULE_DETAILS_URL = "http://43.161.233.143:5173/"
+function _normalizePath(p: string): string {
+  const parts = p.split(/[/\\]/)
+  const resolved: string[] = []
+  for (const part of parts) {
+    if (part === "..") {
+      resolved.pop()
+    } else if (part !== "." && part !== "") {
+      resolved.push(part)
+    }
+  }
+  return "/" + resolved.join("/")
+}
 
 const UG060_PROTECTED_BASENAMES: Set<string> = new Set(["SOUL.MD", "AGENTS.MD", "IDENTITY.MD"])
 
@@ -12,50 +41,6 @@ const UG063_PROTECTED_READ_PATHS: Set<string> = new Set([
   "/etc/ssh/sshd_config", "/etc/ssh/ssh_host_rsa_key",
   "/etc/ssh/ssh_host_ed25519_key", "/etc/ssh/ssh_host_ecdsa_key",
 ])
-
-function _safeStr(v: unknown, defaultVal: string = ""): string {
-  return typeof v === "string" && v.trim() ? v.trim() : defaultVal
-}
-
-function _safeUpper(v: unknown, defaultVal: string = ""): string {
-  const s = _safeStr(v, defaultVal)
-  return s ? s.toUpperCase() : defaultVal
-}
-
-function _safeLower(v: unknown, defaultVal: string = ""): string {
-  const s = _safeStr(v, defaultVal)
-  return s ? s.toLowerCase() : defaultVal
-}
-
-function _safeLevel(v: unknown, defaultVal: string = "UNKNOWN"): string {
-  const s = _safeUpper(v, defaultVal)
-  return s in LEVEL_ORDER ? s : defaultVal
-}
-
-function _levelRank(v: unknown): number {
-  return LEVEL_ORDER[_safeLevel(v) as keyof typeof LEVEL_ORDER] ?? 0.5
-}
-
-function _levelAtLeast(actual: unknown, required: unknown): boolean {
-  return _levelRank(actual) >= _levelRank(required)
-}
-
-function _normList(v: unknown): string[] {
-  if (Array.isArray(v)) {
-    return v.filter((x): x is string => !!(typeof x === "string" && x.trim())).map((x) => x.trim())
-  }
-  return []
-}
-
-function _normSet(v: unknown): Set<string> {
-  return new Set(_normList(v).map((x) => x.toUpperCase()))
-}
-
-function _safeDict(v: unknown): Record<string, unknown> {
-  return v !== null && typeof v === "object" && !Array.isArray(v)
-    ? v as Record<string, unknown>
-    : {}
-}
 
 function _latestToolInstrIndex(
   latestInstructions: Record<string, unknown>[],
@@ -508,7 +493,7 @@ function _buildToolContext(
   const readPaths = [...new Set(
     [argsDict.path, argsDict.file_path, argsDict.directory, argsDict.dir, argsDict.source, argsDict.url]
       .filter((x: unknown): x is string => !!(typeof x === "string" && x.trim()))
-      .map((x: string) => x.trim())
+      .map((x: string) => _normalizePath(x.trim()))
   )].sort()
 
   const execPathTokens = [...new Set(
@@ -737,14 +722,14 @@ function _unaryPolicyTitle(decision: RuleDecision): string {
   return mapping[ruleId] || "安全保护已触发"
 }
 
-function _unaryRuleReference(decision: RuleDecision): string {
+function _unaryRuleReference(decision: RuleDecision, url: string): string {
   const parts: string[] = [`- 规则编号：${decision.rule_id}`]
   parts.push(`- 规则含义：${_localizedRuleMeaning(decision)}`)
-  parts.push(`- 详情见：${RULE_DETAILS_URL}`)
+  parts.push(`- 详情见：${url}`)
   return parts.join("\n")
 }
 
-function _friendlyToolBlock(decision: RuleDecision, ctx: Record<string, unknown>): string {
+function _friendlyToolBlock(decision: RuleDecision, ctx: Record<string, unknown>, url: string): string {
   return [
     "## ⚠️ 安全策略拦截确认",
     "",
@@ -755,11 +740,11 @@ function _friendlyToolBlock(decision: RuleDecision, ctx: Record<string, unknown>
     `[${_unaryPolicyTitle(decision)}]：${_toolBlockReason(decision, ctx)}`,
     "",
     "### 3. 规则说明",
-    _unaryRuleReference(decision),
+    _unaryRuleReference(decision, url),
   ].join("\n")
 }
 
-function _friendlyRespondBlock(decision: RuleDecision, ctx: Record<string, unknown>): string {
+function _friendlyRespondBlock(decision: RuleDecision, ctx: Record<string, unknown>, url: string): string {
   return [
     "## ⚠️ 安全策略拦截确认",
     "",
@@ -770,78 +755,23 @@ function _friendlyRespondBlock(decision: RuleDecision, ctx: Record<string, unkno
     `[${_unaryPolicyTitle(decision)}]：${_toolBlockReason(decision, ctx)}`,
     "",
     "### 3. 规则说明",
-    _unaryRuleReference(decision),
+    _unaryRuleReference(decision, url),
   ].join("\n")
-}
-
-function _appendUniqueError(errors: string[], seen: Set<string>, message: string): void {
-  if (!seen.has(message)) {
-    errors.push(message)
-    seen.add(message)
-  }
-}
-
-function extractToolCalls(response: Record<string, unknown>): Record<string, unknown>[] {
-  const tcs = response.tool_calls
-  if (Array.isArray(tcs)) {
-    return tcs.filter((tc): tc is Record<string, unknown> => tc !== null && typeof tc === "object" && !Array.isArray(tc))
-  }
-  return []
-}
-
-function parseToolCall(tc: Record<string, unknown>): {
-  toolName: string
-  toolCallId: string | null
-  argsDict: Record<string, unknown>
-  wasJsonStr: boolean
-} {
-  const toolCallId = typeof tc.id === "string" ? tc.id : null
-  const fn = tc.function
-  if (!fn || typeof fn !== "object" || Array.isArray(fn)) {
-    return { toolName: "unknown_tool", toolCallId, argsDict: {}, wasJsonStr: false }
-  }
-  const func = fn as Record<string, unknown>
-  const nameRaw = func.name
-  const toolName = typeof nameRaw === "string" && nameRaw.trim() ? nameRaw.trim() : "unknown_tool"
-
-  const rawArgs = func.arguments
-  if (typeof rawArgs === "string") {
-    try {
-      const parsed = JSON.parse(rawArgs)
-      const argsDict = typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {}
-      return { toolName, toolCallId, argsDict, wasJsonStr: true }
-    } catch {
-      return { toolName, toolCallId, argsDict: {}, wasJsonStr: true }
-    }
-  }
-  if (rawArgs !== null && typeof rawArgs === "object" && !Array.isArray(rawArgs)) {
-    const argsDict = { ...(rawArgs as Record<string, unknown>) }
-    return { toolName, toolCallId, argsDict, wasJsonStr: false }
-  }
-  return { toolName, toolCallId, argsDict: {}, wasJsonStr: false }
-}
-
-function writeBackToolArgs(tc: Record<string, unknown>, args: Record<string, unknown>, wasJsonStr: boolean): Record<string, unknown> {
-  const out = { ...tc }
-  const fn = out.function
-  if (!fn || typeof fn !== "object" || Array.isArray(fn)) return out
-  const fn2 = { ...(fn as Record<string, unknown>) }
-  if (wasJsonStr) {
-    fn2.arguments = JSON.stringify(args)
-  } else {
-    fn2.arguments = args
-  }
-  out.function = fn2
-  return out
 }
 
 export class UnaryGatePolicy extends Policy {
   private cfg: Record<string, unknown>
   private ruleBundle: Record<string, unknown> | null = null
+  private ruleDetailsUrl: string
+  private strictMode: boolean = false
 
   constructor(cfg: Record<string, unknown> = {}) {
     super()
     this.cfg = cfg
+    this.strictMode = !!(cfg.strict_mode ?? _safeDict(cfg.unary_gate).strict_mode ?? false)
+    const topLevel = _safeStr(cfg.rule_details_url)
+    const ugLevel = _safeStr(_safeDict(cfg.unary_gate).rule_details_url)
+    this.ruleDetailsUrl = topLevel || ugLevel || DEFAULT_RULE_DETAILS_URL
   }
 
   private _getRuleBundle(): Record<string, unknown> {
@@ -850,13 +780,16 @@ export class UnaryGatePolicy extends Policy {
       const ruleFile = _safeStr(unaryCfg.rule_file)
       if (ruleFile) {
         try {
-          const { readFileSync } = require("node:fs")
           const text = readFileSync(ruleFile, "utf-8")
           const data = JSON.parse(text)
           if (data && typeof data === "object" && !Array.isArray(data)) {
             this.ruleBundle = data as Record<string, unknown>
           }
-        } catch {
+        } catch (err) {
+          if (this.strictMode) {
+            throw new Error(`Rule file load failed in strict mode: ${ruleFile}`)
+          }
+          audit({ severity: "warn", category: "policy", action: "rule_file_load", message: `Rule file load failed, falling back to legacy rules: ${ruleFile}`, policyName: "UnaryGatePolicy" })
           this.ruleBundle = this._legacyRuleBundle()
         }
       } else {
@@ -1066,7 +999,7 @@ export class UnaryGatePolicy extends Policy {
       title: "protected identity or control file direct mutation",
       description: "block direct write/edit to protected identity/control file",
       scope: "tool",
-      selector: { tool: ["write", "edit"] },
+      selector: { tool: ["write", "write_file", "edit"] },
       predicate: { intersects: [{ var: "direct_target_basenames" }, { const: [...UG060_PROTECTED_BASENAMES] }] },
       effect: "BLOCK",
       message: "这一步会直接修改受保护文件，已暂停执行。",
@@ -1118,7 +1051,7 @@ export class UnaryGatePolicy extends Policy {
       title: "protected system sensitive file read",
       description: "block read of system sensitive files like /etc/shadow",
       scope: "tool",
-      selector: { tool: ["read", "read_file"] },
+      selector: { tool: ["read", "read_file", "list_directory"] },
       predicate: { intersects: [{ var: "read_paths" }, { const: [...UG063_PROTECTED_READ_PATHS] }] },
       effect: "BLOCK",
       message: "这一步会读取系统敏感文件，已暂停执行。",
@@ -1173,7 +1106,7 @@ export class UnaryGatePolicy extends Policy {
         continue
       }
 
-      const userMsg = _friendlyToolBlock(decision, ctx)
+      const userMsg = _friendlyToolBlock(decision, ctx, this.ruleDetailsUrl)
       _appendUniqueError(errors, seenErrors, userMsg)
     }
 
@@ -1202,7 +1135,7 @@ export class UnaryGatePolicy extends Policy {
         const ctx = _buildRespondContext(respondIns)
         const decision = _evaluateRules(rulesForEval, ctx, this.cfg)
         if (decision !== null) {
-          const userMsg = _friendlyRespondBlock(decision, ctx)
+          const userMsg = _friendlyRespondBlock(decision, ctx, this.ruleDetailsUrl)
           response.content = userMsg
           return {
             modified: true,

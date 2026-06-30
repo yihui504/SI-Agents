@@ -137,7 +137,7 @@ function printCommandHelp(command: CLICommand): void {
   --skill <path>          技能目录路径 (必需)
   --task <description>    任务描述 (必需)
   --work-dir <path>       工作目录
-  --adapter <name>        适配器类型: bare-agent | openclaw (默认: bare-agent)
+  --adapter <name>        适配器类型: bare-agent | openclaw (实验性) (默认: bare-agent)
   --max-iterations <n>    最大迭代次数 (默认: 50)
   --config <path>         配置文件路径
 

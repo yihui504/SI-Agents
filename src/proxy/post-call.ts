@@ -1,4 +1,4 @@
-import type { ChatCompletionResponse, ChatCompletionMessage, PostCallResult, ToolCall } from "./types.ts"
+import type { ChatCompletionResponse, ChatCompletionMessage, PostCallResult, ToolCall, ConfirmationEntry } from "./types.ts"
 import type { ProxyConfig } from "./types.ts"
 import type { Instruction } from "../types/instruction.ts"
 import { InstructionBuilder } from "../instruction/builder.ts"
@@ -107,7 +107,7 @@ export async function executePostCall(
   traceId: string,
   config: ProxyConfig,
   previousInstructions: Instruction[],
-  pendingConfirmations: Map<string, string>
+  pendingConfirmations: Map<string, ConfirmationEntry>
 ): Promise<PostCallResult> {
   const unwrappedResponse = unwrapResponse(response)
 
@@ -157,13 +157,15 @@ export async function executePostCall(
 
   if (policyResult.error_type && !config.observeOnly) {
     const blockedMessage = policyResult.error_type
-    pendingConfirmations.set(traceId, blockedMessage)
+    const token = crypto.randomUUID()
+    pendingConfirmations.set(traceId, { message: blockedMessage, token, createdAt: Date.now() })
 
     const confirmationMessage = createConfirmationPrompt(blockedMessage)
 
+    const mockResponse = createMockResponse(confirmationMessage, response.model)
     return {
       modified: true,
-      response: createMockResponse(confirmationMessage, response.model),
+      response: { ...mockResponse, confirmation_token: token },
       policyBlocked: true,
       policyMessage: blockedMessage,
     }

@@ -1,6 +1,8 @@
-import type { ChatCompletionRequest, ChatCompletionMessage, PreCallResult } from "./types.ts"
+import type { ChatCompletionRequest, ChatCompletionMessage, PreCallResult, ConfirmationEntry } from "./types.ts"
 import type { ProxyConfig } from "./types.ts"
 import { isPolicyConfirmationReply, extractConfirmationReply, hasPolicyConfirmationInHistory } from "./confirmation.ts"
+
+const CONFIRMATION_TTL_MS = 5 * 60 * 1000
 
 function extractTextContent(content: string | ChatCompletionMessage["content"]): string {
   if (content === null) return ""
@@ -52,7 +54,7 @@ function injectMetadata(
 export async function executePreCall(
   request: ChatCompletionRequest,
   config: ProxyConfig,
-  pendingConfirmations: Map<string, string>
+  pendingConfirmations: Map<string, ConfirmationEntry>
 ): Promise<PreCallResult> {
   const metadata = request.metadata ?? {}
   let traceId: string
@@ -64,9 +66,57 @@ export async function executePreCall(
 
   if (isPolicyConfirmationReply(request.messages)) {
     const reply = extractConfirmationReply(request.messages)
-    const previousBlockedMessage = pendingConfirmations.get(traceId)
+    const entry = pendingConfirmations.get(traceId)
 
-    if (previousBlockedMessage) {
+    if (entry) {
+      if (Date.now() - entry.createdAt >= CONFIRMATION_TTL_MS) {
+        pendingConfirmations.delete(traceId)
+        return {
+          shouldBypass: true,
+          bypassResponse: {
+            id: `chatcmpl-${crypto.randomUUID()}`,
+            object: "chat.completion",
+            created: Math.floor(Date.now() / 1000),
+            model: request.model,
+            choices: [
+              {
+                index: 0,
+                message: {
+                  role: "assistant",
+                  content: "确认已过期，请重新发起请求。",
+                },
+                finish_reason: "stop",
+              },
+            ],
+          },
+          traceId,
+        }
+      }
+
+      const requestToken = typeof metadata.confirmation_token === "string" ? metadata.confirmation_token : null
+      if (!requestToken || requestToken !== entry.token) {
+        return {
+          shouldBypass: true,
+          bypassResponse: {
+            id: `chatcmpl-${crypto.randomUUID()}`,
+            object: "chat.completion",
+            created: Math.floor(Date.now() / 1000),
+            model: request.model,
+            choices: [
+              {
+                index: 0,
+                message: {
+                  role: "assistant",
+                  content: "确认令牌无效，操作被拒绝。",
+                },
+                finish_reason: "stop",
+              },
+            ],
+          },
+          traceId,
+        }
+      }
+
       if (reply === "no") {
         pendingConfirmations.delete(traceId)
         return {

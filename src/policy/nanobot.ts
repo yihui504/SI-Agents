@@ -1,5 +1,27 @@
 import { Policy } from "./policy.ts"
 import type { PolicyCheckResult } from "../types/policy.ts"
+import { audit } from "../hooks/structured-audit.ts"
+
+const REDOS_RISK_PATTERNS = [
+  /(\+|\*){2,}/,
+  /\([^)]*\+[^)]*\)[\+\*]/,
+  /\(\?\:/,
+  /\{.*\d{3,}.*\}/,
+]
+
+function validateDenyPattern(pattern: string): { safe: boolean; reason: string | null } {
+  for (const riskPattern of REDOS_RISK_PATTERNS) {
+    if (riskPattern.test(pattern)) {
+      return { safe: false, reason: `Pattern "${pattern}" contains potentially dangerous regex constructs` }
+    }
+  }
+  if (pattern.length > 200) {
+    return { safe: false, reason: `Pattern too long (${pattern.length} chars, max 200)` }
+  }
+  return { safe: true, reason: null }
+}
+
+
 
 export interface NanobotPolicyConfig {
   enabled: boolean
@@ -9,16 +31,26 @@ export interface NanobotPolicyConfig {
 export class NanobotPolicy extends Policy {
   readonly name = "nanobot"
   private config: NanobotPolicyConfig
+  private safeDenyPatterns: string[]
 
   constructor(config: NanobotPolicyConfig = { enabled: true, execDenyPatterns: [] }) {
     super()
-    this.config = config
+    this.config = { enabled: config.enabled ?? true, execDenyPatterns: config.execDenyPatterns ?? [] }
+    this.safeDenyPatterns = []
+    for (const pattern of this.config.execDenyPatterns) {
+      const { safe, reason } = validateDenyPattern(pattern)
+      if (!safe) {
+        audit({ severity: "warn", category: "policy", action: "pattern_validation", message: `Skipping unsafe deny pattern: ${reason}`, policyName: "NanobotPolicy" })
+        continue
+      }
+      this.safeDenyPatterns.push(pattern)
+    }
   }
 
   async check(
     instructions: Record<string, unknown>[],
     currentResponse: Record<string, unknown>,
-    latestInstructions: Record<string, unknown>,
+    latestInstructions: Record<string, unknown>[],
     traceId: string,
   ): Promise<PolicyCheckResult> {
     if (!this.config.enabled) {
@@ -71,7 +103,7 @@ export class NanobotPolicy extends Policy {
 
       const command = String(args.command || args.cmd || args.script || "")
       let blocked = false
-      for (const pattern of this.config.execDenyPatterns) {
+      for (const pattern of this.safeDenyPatterns) {
         if (command.includes(pattern) || new RegExp(pattern, "i").test(command)) {
           errors.push(`命令包含被禁止的模式: ${pattern}`)
           blocked = true
@@ -111,16 +143,12 @@ export class NanobotPolicy extends Policy {
     }
   }
 
-  /**
-   * Check a command against deny patterns (utility method)
-   * Returns true if the command is allowed, false if blocked
-   */
   checkCommand(command: string): { allowed: boolean; message?: string } {
     if (!this.config.enabled) {
       return { allowed: true }
     }
 
-    for (const pattern of this.config.execDenyPatterns) {
+    for (const pattern of this.safeDenyPatterns) {
       if (command.includes(pattern) || new RegExp(pattern, "i").test(command)) {
         return {
           allowed: false,

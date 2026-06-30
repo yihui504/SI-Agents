@@ -1,5 +1,6 @@
 import type { ToolCall, Instruction } from "../types/instruction.ts"
 import type { RuntimeHooks } from "../types/hooks.ts"
+import { audit } from "../hooks/structured-audit.ts"
 import type {
   AdapterConfig as BaseAdapterConfig,
   AgentAdapter,
@@ -46,6 +47,7 @@ export interface OpenClawToolCallResult {
 
 export class OpenClawAdapter implements AgentAdapter {
   readonly name = "openclaw"
+  readonly experimental = true
   private config: OpenClawAdapterConfig
   private hooks: RuntimeHooks = {}
   private configGenerator: OpenClawConfigGenerator
@@ -65,13 +67,15 @@ export class OpenClawAdapter implements AgentAdapter {
   }
 
   async run(runConfig: AdapterRunConfig): Promise<AdapterRunResult> {
+    audit({ severity: "warn", category: "adapter", action: "experimental_run", message: "OpenClawAdapter is experimental and not fully implemented" })
+
     const sessionId = await this.sessionManager.createSession({
       skillDir: runConfig.workDir,
       taskPrompt: runConfig.prompt,
       workDir: runConfig.workDir,
     })
 
-    const session = this.sessionManager.getSession(sessionId)
+    this.sessionManager.getSession(sessionId)
 
     return {
       text: "",
@@ -81,7 +85,8 @@ export class OpenClawAdapter implements AgentAdapter {
       durationMs: 0,
       llmDurationMs: 0,
       workDir: runConfig.workDir,
-      runStatus: "ok",
+      runStatus: "adapter-crashed",
+      statusDetail: "OpenClawAdapter is experimental and not fully implemented",
     }
   }
 

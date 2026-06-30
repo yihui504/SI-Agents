@@ -2,8 +2,9 @@ import { Hono } from "hono"
 import { cors } from "hono/cors"
 import { streamSSE } from "hono/streaming"
 import type { Context } from "hono"
+import { join } from "node:path"
 import type { SIAgentsConfig, ModelRoute } from "../types/config.ts"
-import type { ChatCompletionRequest, ChatCompletionResponse, OpenAIError, TraceContext } from "./types.ts"
+import type { ChatCompletionRequest, ChatCompletionResponse, OpenAIError, TraceContext, ConfirmationEntry } from "./types.ts"
 import type { Instruction } from "../types/instruction.ts"
 import { ModelRouter } from "./model-router.ts"
 import { executePreCall } from "./pre-call.ts"
@@ -11,6 +12,8 @@ import { executePostCall } from "./post-call.ts"
 import { processStreamingResponse } from "./streaming.ts"
 import { PolicyRegistry } from "../policy/registry.ts"
 import { TaintTracker } from "../taint/tracker.ts"
+import { FileStore } from "../persistence/file-store.ts"
+import { Mutex } from "../utils/mutex.ts"
 
 export interface ProxyServerConfig {
   port: number
@@ -23,18 +26,44 @@ export interface ProxyServerConfig {
   securityDir: string
 }
 
+const CONFIRMATION_TTL_MS = 5 * 60 * 1000
+
 export class ProxyServer {
   private app: Hono
   private config: ProxyServerConfig
   private modelRouter: ModelRouter
   private traceContexts: Map<string, TraceContext> = new Map()
-  private pendingConfirmations: Map<string, string> = new Map()
+  private pendingConfirmations: Map<string, ConfirmationEntry> = new Map()
+  private fileStore: FileStore | null = null
   private server: ReturnType<typeof Bun.serve> | null = null
+  private startTime: number = Date.now()
+  private requestCount: number = 0
+  private blockedCount: number = 0
+  private streamingCount: number = 0
+  private totalLatencyMs: number = 0
+  private confirmationCleanupTimer: ReturnType<typeof setInterval> | null = null
+  private stateMutex: Mutex = new Mutex()
 
   constructor(config: ProxyServerConfig) {
     this.config = config
     this.app = new Hono()
     this.modelRouter = new ModelRouter(config.modelRoutes, config.defaultModel)
+    if (this.config.securityDir) {
+      this.fileStore = new FileStore({
+        dir: join(this.config.securityDir, "traces"),
+        enabled: true,
+      })
+    }
+    this.confirmationCleanupTimer = setInterval(() => {
+      this.stateMutex.withLock(async () => {
+        const now = Date.now()
+        for (const [traceId, entry] of this.pendingConfirmations) {
+          if (now - entry.createdAt > CONFIRMATION_TTL_MS) {
+            this.pendingConfirmations.delete(traceId)
+          }
+        }
+      })
+    }, 60000)
     this.setupRoutes()
   }
 
@@ -44,7 +73,8 @@ export class ProxyServer {
     this.app.get("/v1/models", (c) => this.handleModels(c))
     this.app.post("/v1/chat/completions", (c) => this.handleChatCompletions(c))
 
-    this.app.get("/health", (c) => c.json({ status: "ok", timestamp: new Date().toISOString() }))
+    this.app.get("/health", (c) => this.handleHealth(c))
+    this.app.get("/metrics", (c) => this.handleMetrics(c))
   }
 
   private async handleModels(c: Context): Promise<Response> {
@@ -60,7 +90,37 @@ export class ProxyServer {
     })
   }
 
+  private handleHealth(c: Context): Response {
+    const models = this.modelRouter.listModels()
+    return c.json({
+      status: "ok",
+      timestamp: new Date().toISOString(),
+      uptime: Math.floor((Date.now() - this.startTime) / 1000),
+      activeTraces: this.traceContexts.size,
+      pendingConfirmations: this.pendingConfirmations.size,
+      policyEnabled: !this.config.observeOnly,
+      taintEnabled: this.config.taintTracker !== undefined,
+      models: models.map((m) => m.id),
+    })
+  }
+
+  private handleMetrics(c: Context): Response {
+    const uptimeSeconds = Math.floor((Date.now() - this.startTime) / 1000)
+    return c.json({
+      requests_total: this.requestCount,
+      requests_blocked: this.blockedCount,
+      requests_streaming: this.streamingCount,
+      avg_latency_ms: this.requestCount > 0 ? Math.round(this.totalLatencyMs / this.requestCount) : 0,
+      active_traces: this.traceContexts.size,
+      pending_confirmations: this.pendingConfirmations.size,
+      uptime_seconds: uptimeSeconds,
+    })
+  }
+
   private async handleChatCompletions(c: Context): Promise<Response> {
+    const requestStart = Date.now()
+    this.requestCount++
+
     let request: ChatCompletionRequest
     try {
       request = await c.req.json<ChatCompletionRequest>()
@@ -78,6 +138,34 @@ export class ProxyServer {
       )
     }
 
+    if (typeof request.model !== "string" || request.model.trim() === "") {
+      return c.json(
+        {
+          error: {
+            message: "'model' must be a non-empty string",
+            type: "invalid_request_error",
+            param: "model",
+            code: "invalid_model",
+          },
+        },
+        400
+      )
+    }
+
+    if (!Array.isArray(request.messages) || request.messages.length === 0) {
+      return c.json(
+        {
+          error: {
+            message: "'messages' must be a non-empty array",
+            type: "invalid_request_error",
+            param: "messages",
+            code: "invalid_messages",
+          },
+        },
+        400
+      )
+    }
+
     const proxyConfig = {
       policyRegistry: this.config.policyRegistry,
       taintTracker: this.config.taintTracker,
@@ -87,9 +175,13 @@ export class ProxyServer {
       securityDir: this.config.securityDir,
     }
 
-    const preCallResult = await executePreCall(request, proxyConfig, this.pendingConfirmations)
+    const preCallResult = await this.stateMutex.withLock(async () => {
+      return executePreCall(request, proxyConfig, this.pendingConfirmations)
+    })
 
     if (preCallResult.shouldBypass && preCallResult.bypassResponse) {
+      this.blockedCount++
+      this.totalLatencyMs += Date.now() - requestStart
       return c.json(preCallResult.bypassResponse)
     }
 
@@ -111,12 +203,23 @@ export class ProxyServer {
       )
     }
 
-    this.traceContexts.set(traceId, {
-      traceId,
-      request: modifiedRequest,
-      instructions: [],
-      startTime: Date.now(),
+    await this.stateMutex.withLock(async () => {
+      this.traceContexts.set(traceId, {
+        traceId,
+        request: modifiedRequest,
+        instructions: [],
+        startTime: Date.now(),
+      })
     })
+
+    if (this.fileStore) {
+      this.fileStore.save(traceId, {
+        traceId,
+        request: modifiedRequest,
+        instructions: [],
+        startTime: Date.now(),
+      })
+    }
 
     try {
       const upstreamResponse = await this.modelRouter.forward(modifiedRequest, route)
@@ -137,27 +240,34 @@ export class ProxyServer {
       }
 
       if (modifiedRequest.stream) {
+        this.streamingCount++
+        this.totalLatencyMs += Date.now() - requestStart
         return this.handleStreamingResponse(upstreamResponse, traceId, proxyConfig)
       }
 
       const responseData = (await upstreamResponse.json()) as ChatCompletionResponse
 
-      const traceContext = this.traceContexts.get(traceId)
-      const previousInstructions = traceContext?.instructions ?? []
+      const postCallResult = await this.stateMutex.withLock(async () => {
+        const traceContext = this.traceContexts.get(traceId)
+        const previousInstructions = traceContext?.instructions ?? []
 
-      const postCallResult = await executePostCall(
-        responseData,
-        traceId,
-        proxyConfig,
-        previousInstructions,
-        this.pendingConfirmations
-      )
+        const result = await executePostCall(
+          responseData,
+          traceId,
+          proxyConfig,
+          previousInstructions,
+          this.pendingConfirmations
+        )
 
-      if (traceContext && postCallResult.policyBlocked) {
-        const newInstructions = this.parseInstructionsFromResponse(postCallResult.response)
-        traceContext.instructions = [...previousInstructions, ...newInstructions]
-      }
+        if (traceContext && result.policyBlocked) {
+          const newInstructions = this.parseInstructionsFromResponse(result.response)
+          traceContext.instructions = [...previousInstructions, ...newInstructions]
+        }
 
+        return result
+      })
+
+      this.totalLatencyMs += Date.now() - requestStart
       return c.json(postCallResult.response)
     } catch (e) {
       const message = e instanceof Error ? e.message : "Unknown error"
@@ -187,8 +297,11 @@ export class ProxyServer {
       securityDir: string
     }
   ): Promise<Response> {
-    const traceContext = this.traceContexts.get(traceId)
-    const previousInstructions = traceContext?.instructions ?? []
+    const { previousInstructions } = await this.stateMutex.withLock(async () => {
+      const traceContext = this.traceContexts.get(traceId)
+      const previousInstructions = traceContext?.instructions ?? []
+      return { previousInstructions }
+    })
 
     return processStreamingResponse(
       upstreamResponse,
@@ -281,8 +394,19 @@ export class ProxyServer {
   stop(): void {
     this.server?.stop()
     this.server = null
-    this.traceContexts.clear()
+    if (this.confirmationCleanupTimer) {
+      clearInterval(this.confirmationCleanupTimer)
+      this.confirmationCleanupTimer = null
+    }
+    if (!this.fileStore?.isEnabled()) {
+      this.traceContexts.clear()
+    }
     this.pendingConfirmations.clear()
+    this.requestCount = 0
+    this.blockedCount = 0
+    this.streamingCount = 0
+    this.totalLatencyMs = 0
+    this.startTime = Date.now()
     console.log("SI-Agents Proxy Server stopped")
   }
 }

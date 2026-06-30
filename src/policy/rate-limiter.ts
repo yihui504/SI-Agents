@@ -37,6 +37,12 @@ export class RateLimiter {
 
   /**
    * 检查是否允许调用
+   * 
+   * 并发安全说明：此方法为同步方法，在 Node.js 单进程单线程的事件循环中，
+   * 同步代码在两次 await 之间不会被中断，因此 checkLimit 内的
+   * Map.get / Map.set / Array.filter 等操作在同一事件循环 tick 内
+   * 原子执行，不存在竞态条件。对于多进程/Worker 场景则需要外部同步机制。
+   * 
    * @param key 速率限制的键（如用户ID、工具名称等）
    * @returns 速率限制检查结果
    */

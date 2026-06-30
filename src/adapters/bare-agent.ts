@@ -31,6 +31,8 @@ import type {
 } from "../types/hooks.ts"
 import { traceManager } from "./trace-manager.ts"
 import { confirmationHandler } from "./confirmation-handler.ts"
+import { checkSSRF, DEFAULT_SSRF_CONFIG } from "../utils/ssrf-guard.ts"
+import type { SSRFGuardConfig } from "../utils/ssrf-guard.ts"
 
 const DEFAULT_MAX_STEPS = 50
 const DEFAULT_TIMEOUT_MS = 300_000
@@ -60,7 +62,7 @@ const WEB_FETCH_TOOL: LLMTool = {
   },
 }
 
-const TOOLS: LLMTool[] = [...AGENT_TOOLS, LIST_DIRECTORY_TOOL, WEB_FETCH_TOOL]
+const TOOLS: LLMTool[] = [...AGENT_TOOLS]
 
 const LOAD_SKILL_RE = /<?load-skill>\s*(.*?)\s*<\/load-skill>/
 
@@ -73,10 +75,25 @@ async function copySkillToDiscoverDir(
   await Bun.write(path.join(skillDir, "SKILL.md"), task.skillContent)
 }
 
-function estimateCost(model: string, tokens: TokenUsage, reportedCost?: number): number {
+function estimateCost(
+  model: string,
+  tokens: TokenUsage,
+  reportedCost?: number,
+  modelPricing?: Record<string, { inputPrice: number; outputPrice: number }>,
+): number {
   if (reportedCost !== undefined) return reportedCost
 
   const lowerModel = model.toLowerCase()
+
+  if (modelPricing) {
+    for (const key of Object.keys(modelPricing)) {
+      if (lowerModel.includes(key.toLowerCase())) {
+        const pricing = modelPricing[key]
+        return tokens.input * pricing.inputPrice + tokens.output * pricing.outputPrice
+      }
+    }
+  }
+
   let inputPrice = 0
   let outputPrice = 0
 
@@ -102,11 +119,11 @@ function estimateCost(model: string, tokens: TokenUsage, reportedCost?: number):
     inputPrice = 0.25 / 1_000_000
     outputPrice = 1.25 / 1_000_000
   } else if (lowerModel.includes("glm-4.5-flash")) {
-    inputPrice = 0
-    outputPrice = 0
+    inputPrice = 0.0001 / 1_000
+    outputPrice = 0.0001 / 1_000
   } else if (lowerModel.includes("glm-4.7")) {
-    inputPrice = 0
-    outputPrice = 0
+    inputPrice = 0.0005 / 1_000
+    outputPrice = 0.0005 / 1_000
   } else if (lowerModel.includes("glm-4-plus")) {
     inputPrice = 50 / 1_000_000
     outputPrice = 50 / 1_000_000
@@ -119,9 +136,16 @@ function estimateCost(model: string, tokens: TokenUsage, reportedCost?: number):
 }
 
 function llmResponseToRecord(response: LLMResponse): Record<string, unknown> {
+  const toolCalls = response.toolCalls.map(tc => ({
+    tool_name: tc.name,
+    tool_call_id: tc.id,
+    arguments: tc.arguments,
+  }))
   return {
     text: response.text,
     toolCalls: response.toolCalls,
+    tool_calls: toolCalls,
+    content: response.text || "",
     tokens: response.tokens,
     costUsd: response.costUsd,
     durationMs: response.durationMs,
@@ -151,8 +175,12 @@ export class BareAgentAdapter implements AgentAdapter {
   private model = ""
   private maxSteps = DEFAULT_MAX_STEPS
   private timeoutMs = DEFAULT_TIMEOUT_MS
+  private modelPricing?: Record<string, { inputPrice: number; outputPrice: number }>
+  private ssrfConfig: SSRFGuardConfig = { ...DEFAULT_SSRF_CONFIG }
   private hooks: RuntimeHooks = {}
   private providerFactory: (config: AdapterConfig) => LLMProvider
+  private customTools: LLMTool[] = []
+  private customToolExecutors: Map<string, (args: Record<string, unknown>) => Promise<string>> = new Map()
 
   constructor(
     providerFactory: (config: AdapterConfig) => LLMProvider,
@@ -166,11 +194,36 @@ export class BareAgentAdapter implements AgentAdapter {
     this.hooks = hooks
   }
 
+  registerTool(tool: LLMTool): void {
+    if (this.customTools.some(t => t.name === tool.name)) {
+      console.warn(`Tool "${tool.name}" is already registered, skipping duplicate`)
+      return
+    }
+    this.customTools.push(tool)
+  }
+
+  unregisterTool(toolName: string): boolean {
+    const idx = this.customTools.findIndex(t => t.name === toolName)
+    if (idx === -1) return false
+    this.customTools.splice(idx, 1)
+    return true
+  }
+
+  getTools(): LLMTool[] {
+    return [...TOOLS, ...this.customTools]
+  }
+
+  registerToolExecutor(toolName: string, executor: (args: Record<string, unknown>) => Promise<string>): void {
+    this.customToolExecutors.set(toolName, executor)
+  }
+
   async setup(config: AdapterConfig): Promise<void> {
     this.provider = this.providerFactory(config)
     this.model = config.model
     if (config.maxSteps) this.maxSteps = config.maxSteps
     if (config.timeoutMs) this.timeoutMs = config.timeoutMs
+    if (config.modelPricing) this.modelPricing = config.modelPricing
+    if (config.ssrfGuard) this.ssrfConfig = { ...DEFAULT_SSRF_CONFIG, ...config.ssrfGuard }
   }
 
   async run(task: AdapterRunConfig): Promise<AdapterRunResult> {
@@ -223,13 +276,17 @@ Available skills:
               previousToolCalls: allToolCalls,
             }
             const result = await hook(ctx)
-            if (result.action === "replace") {
+            if (result.action === "replace" && result.toolResults) {
               return {
-                text: result.text ?? "",
-                toolCalls: [],
+                text: result.text ?? "Boosted execution",
+                toolCalls: result.toolResults.map(tr => ({
+                  name: tr.tool_name,
+                  id: tr.tool_call_id,
+                  arguments: tr.arguments as Record<string, unknown>,
+                })),
                 tokens: emptyTokenUsage(),
                 durationMs: 0,
-                stopReason: "end_turn",
+                stopReason: "tool_use",
               }
             }
             if (result.action === "block") {
@@ -260,13 +317,17 @@ Available skills:
               previousToolCalls: allToolCalls,
             }
             const result = await hook(ctx)
-            if (result.action === "replace") {
+            if (result.action === "replace" && result.toolResults) {
               return {
-                text: result.text ?? "",
-                toolCalls: [],
+                text: result.text ?? "Boosted execution",
+                toolCalls: result.toolResults.map(tr => ({
+                  name: tr.tool_name,
+                  id: tr.tool_call_id,
+                  arguments: tr.arguments as Record<string, unknown>,
+                })),
                 tokens: emptyTokenUsage(),
                 durationMs: 0,
-                stopReason: "end_turn",
+                stopReason: "tool_use",
               }
             }
             if (result.action === "block") {
@@ -288,8 +349,24 @@ Available skills:
       {
         provider: wrappedProvider,
         model: this.model,
-        tools: TOOLS,
-        executeTool: createToolExecutor(task.workDir),
+        tools: this.getTools(),
+        executeTool: async (call: LLMToolCall) => {
+          const customExecutor = this.customToolExecutors.get(call.name)
+          if (customExecutor) {
+            const output = await customExecutor(call.arguments as Record<string, unknown>)
+            return { output, durationMs: 0 }
+          }
+          if (call.name === "web_fetch") {
+            const url = call.arguments.url as string | undefined
+            if (url) {
+              const ssrfResult = checkSSRF(url, this.ssrfConfig)
+              if (!ssrfResult.allowed) {
+                return { output: `SSRF protection: ${ssrfResult.reason}`, durationMs: 0 }
+              }
+            }
+          }
+          return createToolExecutor(task.workDir)(call)
+        },
         system,
         maxIterations: this.maxSteps,
         timeoutMs: task.timeoutMs ?? this.timeoutMs,
@@ -335,7 +412,7 @@ Available skills:
               allToolCalls.push(completedCall)
             },
         onBeforeTool: this.hooks.beforeTool
-          ? async (toolCall: ToolCall, iteration: number): Promise<boolean> => {
+          ? async (toolCall: ToolCall, iteration: number): Promise<BeforeToolResult> => {
               const ctx: BeforeToolContext = {
                 toolCall,
                 workDir: task.workDir,
@@ -344,10 +421,10 @@ Available skills:
               for (const hook of this.hooks.beforeTool!) {
                 const result = await hook(ctx)
                 if (result.action === "block") {
-                  return false
+                  return result
                 }
               }
-              return true
+              return { action: "passthrough" }
             }
           : undefined,
       },
@@ -360,17 +437,21 @@ Available skills:
       ? "timeout"
       : loopResult.error
         ? "adapter-crashed"
-        : loopResult.policyBlocked
-          ? "policy-blocked"
-          : "ok"
+        : loopResult.policyRetryExceeded
+          ? "policy-retry-exceeded"
+          : loopResult.policyBlocked
+            ? "policy-blocked"
+            : "ok"
 
     const statusDetail = loopResult.timedOut
       ? `bare-agent loop exceeded timeout ${task.timeoutMs ?? this.timeoutMs}ms after ${loopResult.iterations} iterations`
       : loopResult.error
         ? loopResult.error.message.slice(0, 200)
-        : loopResult.policyBlocked
-          ? "Blocked by policy"
-          : undefined
+        : loopResult.policyRetryExceeded
+          ? `Policy retry limit exceeded (${loopResult.iterations} consecutive blocks)`
+          : loopResult.policyBlocked
+            ? "Blocked by policy"
+            : undefined
 
     traceManager.endTrace(traceId, runStatus === "ok" ? "completed" : "failed", statusDetail)
 
@@ -378,7 +459,7 @@ Available skills:
       text: loopResult.text,
       steps: loopResult.steps,
       tokens: loopResult.tokens,
-      cost: estimateCost(this.model, loopResult.tokens, loopResult.totalCostUsd),
+      cost: estimateCost(this.model, loopResult.tokens, loopResult.totalCostUsd, this.modelPricing),
       durationMs,
       llmDurationMs: loopResult.llmDurationMs,
       workDir: task.workDir,
@@ -419,7 +500,8 @@ Available skills:
       instructions: Instruction[]
       onAfterLLM?: (response: LLMResponse, iteration: number) => Promise<void> | void
       onAfterTool?: (completedCall: ToolCall, iteration: number) => Promise<void> | void
-      onBeforeTool?: (toolCall: ToolCall, iteration: number) => Promise<boolean>
+      onBeforeTool?: (toolCall: ToolCall, iteration: number) => Promise<BeforeToolResult>
+      maxPolicyRetries?: number
     },
     initialMessages: LLMMessage[],
   ): Promise<{
@@ -433,6 +515,7 @@ Available skills:
     error?: Error
     timedOut?: boolean
     policyBlocked?: boolean
+    policyRetryExceeded?: boolean
   }> {
     const { provider, tools, executeTool, system, maxIterations, timeoutMs, traceId, instructions } = config
 
@@ -458,6 +541,8 @@ Available skills:
     let loopError: Error | undefined
     let timedOut = false
     let policyBlocked = false
+    let policyRetryExceeded = false
+    let consecutivePolicyBlocks = 0
     let pendingHistory: Array<{ role: "system" | "user" | "assistant"; content: string }> | undefined
     let lastActionSig = ""
     let repeatCount = 0
@@ -516,12 +601,14 @@ Available skills:
           }
 
           if (config.onBeforeTool) {
-            const allowed = await config.onBeforeTool(toolCall, iteration)
-            if (!allowed) {
+            const beforeResult = await config.onBeforeTool(toolCall, iteration)
+            if (beforeResult.action === "block") {
               policyBlocked = true
+              consecutivePolicyBlocks++
+              const blockReason = beforeResult.reason ?? "Policy violation"
               toolResults.push({
                 toolCallId: tc.id,
-                content: "Tool call blocked by policy",
+                content: `⚠️ Tool call blocked: ${blockReason}\n\nPlease try a different approach. If you were trying to access files, use paths within the workspace directory.`,
                 isError: true,
               })
               continue
@@ -529,6 +616,7 @@ Available skills:
           }
 
           const result = await executeTool(tc)
+          consecutivePolicyBlocks = 0
           toolResults.push({ toolCallId: tc.id, content: result.output })
 
           const completedCall: ToolCall = {
@@ -573,6 +661,11 @@ Available skills:
           timestamp: Date.now(),
         })
 
+        if (consecutivePolicyBlocks >= (config.maxPolicyRetries ?? 3)) {
+          policyRetryExceeded = true
+          break
+        }
+
         if (pendingHistory) {
           params.messages.push(...pendingHistory)
         }
@@ -616,6 +709,7 @@ Available skills:
       error: loopError,
       timedOut,
       policyBlocked,
+      policyRetryExceeded,
     }
   }
 }

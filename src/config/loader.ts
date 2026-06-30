@@ -30,6 +30,41 @@ function deepMerge<T extends Record<string, unknown>>(target: T, source: Partial
   return result
 }
 
+function resolveSecretRefs(config: Record<string, unknown>): Record<string, unknown> {
+  const SECRET_FIELDS = new Set(["api_key", "secret_key", "public_key", "password", "token"])
+  const result = { ...config }
+
+  for (const [key, value] of Object.entries(result)) {
+    if (typeof value === "string" && SECRET_FIELDS.has(key)) {
+      result[key] = resolveSecretRef(value)
+    } else if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+      result[key] = resolveSecretRefs(value as Record<string, unknown>)
+    }
+  }
+
+  return result
+}
+
+function resolveSecretRef(value: string): string {
+  if (value.startsWith("env://")) {
+    const envVar = value.slice(6)
+    const resolved = process.env[envVar]
+    if (!resolved) {
+      throw new Error(`Secret reference env://${envVar}: environment variable not set`)
+    }
+    return resolved
+  }
+  if (value.startsWith("file://")) {
+    const filePath = value.slice(7)
+    try {
+      return readFileSync(filePath, "utf-8").trim()
+    } catch (e) {
+      throw new Error(`Secret reference file://${filePath}: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+  return value
+}
+
 export class ConfigLoader {
   static async load(path: string): Promise<SIAgentsConfig> {
     const expandedPath = expandPath(path)
@@ -38,7 +73,7 @@ export class ConfigLoader {
     }
     const content = readFileSync(expandedPath, "utf-8")
     const rawConfig = JSON.parse(content)
-    const resolvedConfig = ConfigLoader.resolveEnvVars(rawConfig) as Record<string, unknown>
+    const resolvedConfig = resolveSecretRefs(ConfigLoader.resolveEnvVars(rawConfig) as Record<string, unknown>)
 
     // Load external policy config if specified
     if (resolvedConfig.policy && typeof resolvedConfig.policy === "object") {

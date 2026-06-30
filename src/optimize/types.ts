@@ -30,6 +30,7 @@ export interface OptimizeConfig {
   rounds: number
   runsPerTask: number
   securityConstraints?: SecurityConstraint
+  headlessAgent?: HeadlessAgent
 }
 
 export interface OptimizeResult {
@@ -118,6 +119,10 @@ export const OptimizeSubmissionSchema = z.object({
   noChanges: z.boolean().optional(),
   securityViolations: z.array(z.string()).optional(),
 })
+
+export interface HeadlessAgent {
+  run(config: HeadlessAgentConfig): Promise<HeadlessAgentResult>
+}
 
 export interface HeadlessAgentConfig {
   cwd: string

@@ -1,7 +1,28 @@
-import type { ChatCompletionResponse, StreamingChunk, StreamingToolCall, ProxyConfig } from "./types.ts"
+import type { ChatCompletionResponse, StreamingChunk, StreamingToolCall, ProxyConfig, ConfirmationEntry } from "./types.ts"
 import type { Instruction } from "../types/instruction.ts"
 import { executePostCall } from "./post-call.ts"
 import { createConfirmationPrompt } from "./confirmation.ts"
+
+export const STREAMING_DANGEROUS_PATTERNS = [
+  /rm\s+-rf\s+[\/~]/i,
+  /chmod\s+777/i,
+  /DROP\s+TABLE/i,
+  /DELETE\s+FROM/i,
+  /\/etc\/shadow/i,
+  /\/etc\/passwd/i,
+  /sudo\s+rm/i,
+  /mkfs/i,
+  /dd\s+if=/i,
+]
+
+export function checkStreamingContent(content: string): { allowed: boolean; reason: string | null } {
+  for (const pattern of STREAMING_DANGEROUS_PATTERNS) {
+    if (pattern.test(content)) {
+      return { allowed: false, reason: `流式内容检测到潜在危险模式` }
+    }
+  }
+  return { allowed: true, reason: null }
+}
 
 function parseSSELine(line: string): { data: string } | null {
   if (!line.startsWith("data: ")) return null
@@ -101,7 +122,7 @@ export async function processStreamingResponse(
   traceId: string,
   config: ProxyConfig,
   previousInstructions: Instruction[],
-  pendingConfirmations: Map<string, string>
+  pendingConfirmations: Map<string, ConfirmationEntry>
 ): Promise<Response> {
   const reader = upstreamResponse.body?.getReader()
   if (!reader) {
@@ -114,9 +135,16 @@ export async function processStreamingResponse(
 
   let buffer = ""
   let policyChecked = false
+  let accumulatedContent = ""
+  let streamingPolicyBlocked = false
+  let pendingChunks: Uint8Array[] = []
 
   const transformStream = new TransformStream({
     async transform(chunk, controller) {
+      if (streamingPolicyBlocked) {
+        return
+      }
+
       buffer += decoder.decode(chunk, { stream: true })
       const lines = buffer.split("\n")
       buffer = lines.pop() ?? ""
@@ -128,59 +156,114 @@ export async function processStreamingResponse(
         if (!parsed) continue
 
         if (parsed.data === "[DONE]") {
-          if (!policyChecked) {
-            policyChecked = true
-            const fullResponse = accumulatedToResponse(accumulated)
-            const postResult = await executePostCall(
-              fullResponse,
-              traceId,
-              config,
-              previousInstructions,
-              pendingConfirmations
-            )
-
-            if (postResult.policyBlocked && postResult.policyMessage) {
-              const confirmationMsg = createConfirmationPrompt(postResult.policyMessage)
-              const policyChunk: StreamingChunk = {
-                id: fullResponse.id,
-                object: "chat.completion.chunk",
-                created: Math.floor(Date.now() / 1000),
-                model: fullResponse.model,
-                choices: [
-                  {
-                    index: 0,
-                    delta: { content: "\n\n---\n\n" + confirmationMsg },
-                    finish_reason: null,
-                  },
-                ],
-              }
-              controller.enqueue(encoder.encode(`data: ${JSON.stringify(policyChunk)}\n\n`))
-            }
-          }
-
-          controller.enqueue(encoder.encode("data: [DONE]\n\n"))
           continue
         }
 
         const chunk = parseChunk(parsed.data)
         if (chunk) {
           accumulateChunk(accumulated, chunk)
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`))
+
+          if (chunk.choices) {
+            for (const choice of chunk.choices) {
+              if (choice.delta?.content) {
+                accumulatedContent += choice.delta.content
+              }
+            }
+          }
+
+          pendingChunks.push(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`))
+
+          if (accumulatedContent.length >= 500) {
+            const policyResult = checkStreamingContent(accumulatedContent)
+            if (!policyResult.allowed) {
+              streamingPolicyBlocked = true
+              policyChecked = true
+              pendingChunks = []
+              const blockChunk: StreamingChunk = {
+                id: accumulated.id || `chatcmpl-${crypto.randomUUID()}`,
+                object: "chat.completion.chunk",
+                created: Math.floor(Date.now() / 1000),
+                model: accumulated.model,
+                choices: [
+                  {
+                    index: 0,
+                    delta: {
+                      content: "\n\n---\n\n⚠️ **策略拦截**: " + (policyResult.reason ?? "流式内容检测到潜在危险模式"),
+                    },
+                    finish_reason: "stop",
+                  },
+                ],
+              }
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify(blockChunk)}\n\n`))
+              controller.enqueue(encoder.encode("data: [DONE]\n\n"))
+              return
+            }
+
+            for (const pending of pendingChunks) {
+              controller.enqueue(pending)
+            }
+            pendingChunks = []
+          }
         }
       }
     },
 
     async flush(controller) {
+      if (streamingPolicyBlocked) {
+        return
+      }
+
       if (buffer.trim()) {
         const parsed = parseSSELine(buffer)
         if (parsed && parsed.data !== "[DONE]") {
           const chunk = parseChunk(parsed.data)
           if (chunk) {
             accumulateChunk(accumulated, chunk)
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`))
+
+            if (chunk.choices) {
+              for (const choice of chunk.choices) {
+                if (choice.delta?.content) {
+                  accumulatedContent += choice.delta.content
+                }
+              }
+            }
+
+            pendingChunks.push(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`))
           }
         }
       }
+
+      if (accumulatedContent.length > 0) {
+        const policyResult = checkStreamingContent(accumulatedContent)
+        if (!policyResult.allowed) {
+          streamingPolicyBlocked = true
+          policyChecked = true
+          pendingChunks = []
+          const blockChunk: StreamingChunk = {
+            id: accumulated.id || `chatcmpl-${crypto.randomUUID()}`,
+            object: "chat.completion.chunk",
+            created: Math.floor(Date.now() / 1000),
+            model: accumulated.model,
+            choices: [
+              {
+                index: 0,
+                delta: {
+                  content: "\n\n---\n\n⚠️ **策略拦截**: " + (policyResult.reason ?? "流式内容检测到潜在危险模式"),
+                },
+                finish_reason: "stop",
+              },
+            ],
+          }
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(blockChunk)}\n\n`))
+          controller.enqueue(encoder.encode("data: [DONE]\n\n"))
+          return
+        }
+      }
+
+      for (const pending of pendingChunks) {
+        controller.enqueue(pending)
+      }
+      pendingChunks = []
 
       if (!policyChecked) {
         policyChecked = true

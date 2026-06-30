@@ -32,7 +32,7 @@ export interface BeforeToolContext {
 }
 
 export type BeforeToolResult =
-  | { action: "passthrough" }
+  | { action: "passthrough"; reason?: string }
   | { action: "block"; reason: string }
 
 export interface AfterRunContext {

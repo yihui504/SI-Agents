@@ -769,7 +769,7 @@ describe("优化流程测试", () => {
           convergenceThreshold: 0.99,
         })
 
-        const result = await loop.run()
+        const result = await loop.run("/tmp/test-skill-dir")
 
         expect(result.rounds.length).toBe(5)
         expect(result.finalScore).toBe(0.98)
@@ -799,7 +799,7 @@ describe("优化流程测试", () => {
           convergenceThreshold: 0.95,
         })
 
-        const result = await loop.run()
+        const result = await loop.run("/tmp/test-skill-dir")
 
         expect(result.rounds.length).toBe(3) // 在第3轮达到阈值后停止
         expect(loop.wasStopped()).toBe(true)
@@ -829,7 +829,7 @@ describe("优化流程测试", () => {
           convergenceThreshold: 0.99,
         })
 
-        const result = await loop.run()
+        const result = await loop.run("/tmp/test-skill-dir")
 
         expect(result.bestRound).toBe(4) // 第4轮得分最高 (0.9)
         expect(result.finalScore).toBe(0.9)
@@ -862,7 +862,7 @@ describe("优化流程测试", () => {
           },
         })
 
-        await loop.run()
+        await loop.run("/tmp/test-skill-dir")
 
         expect(roundCallbacks).toEqual([1, 2, 3])
 
@@ -2106,15 +2106,13 @@ describe("策略引擎完整性测试", () => {
         )
 
         const entries = registry.getEntries()
-        // getEntries() returns entries in registration order, not by order field
-        expect(entries[0]!.name).toBe("policy-1")
-        expect(entries[1]!.name).toBe("policy-2")
-        expect(entries[2]!.name).toBe("policy-3")
+        expect(entries[0]!.name).toBe("policy-3")
+        expect(entries[1]!.name).toBe("policy-1")
+        expect(entries[2]!.name).toBe("policy-2")
 
-        // Verify order field is preserved
-        expect(entries[0]!.order).toBe(1)
-        expect(entries[1]!.order).toBe(2)
-        expect(entries[2]!.order).toBe(0)
+        expect(entries[0]!.order).toBe(0)
+        expect(entries[1]!.order).toBe(1)
+        expect(entries[2]!.order).toBe(2)
 
         recordTest("PolicyRegistry 集成测试", "按注册顺序获取", true, Date.now() - startTime)
       } catch (error) {

@@ -13,6 +13,14 @@ const DANGEROUS_PATTERNS = [
   { pattern: />\s*\/dev\/(sda|hda|nvme)/gi, warning: "Template writes to disk device directly" },
   { pattern: /\bcurl\s+.*\|\s*(ba)?sh\b/gi, warning: "Template pipes curl output to shell which is dangerous" },
   { pattern: /\bwget\s+.*\|\s*(ba)?sh\b/gi, warning: "Template pipes wget output to shell which is dangerous" },
+  { pattern: /\bchmod\s+[0-7]{3,4}\b/gi, warning: "Template contains chmod with octal mode" },
+  { pattern: /\bchown\s+/gi, warning: "Template contains chown which can change file ownership" },
+  { pattern: /\bmkfs\b/gi, warning: "Template contains mkfs which can format filesystems" },
+  { pattern: /\bdd\s+of=/gi, warning: "Template contains dd with output file which can be destructive" },
+  { pattern: /\bshutdown\b/gi, warning: "Template contains shutdown command" },
+  { pattern: /\breboot\b/gi, warning: "Template contains reboot command" },
+  { pattern: /\bformat\s+[A-Z]:/gi, warning: "Template contains format command" },
+  { pattern: /\b:\(\)\{\s*:\|:&\}/gi, warning: "Template contains fork bomb pattern" },
 ]
 
 const SENSITIVE_PATHS = [
@@ -24,6 +32,12 @@ const SENSITIVE_PATHS = [
   "~/.aws/",
   "~/.env",
   ".env",
+  "/root/",
+  "/var/log/auth.log",
+  "/proc/self/environ",
+  "/proc/self/maps",
+  "/.env.production",
+  "/.env.local",
 ]
 
 export class BoostSecurityAuditor {
@@ -42,6 +56,15 @@ export class BoostSecurityAuditor {
         passed: false,
         reason: `Template safety check failed: ${templateSafety.warnings.join("; ")}`,
         warnings: templateSafety.warnings,
+      }
+    }
+
+    const paramSafety = this.checkParameterInjection(params)
+    if (!paramSafety.safe) {
+      return {
+        passed: false,
+        reason: `Parameter injection check failed: ${paramSafety.warnings.join("; ")}`,
+        warnings: [...templateSafety.warnings, ...paramSafety.warnings],
       }
     }
 
@@ -80,6 +103,15 @@ export class BoostSecurityAuditor {
     }
 
     const resultStr = typeof result === "string" ? result : JSON.stringify(result)
+
+    if (resultStr.length > 100 * 1024) {
+      return {
+        passed: false,
+        reason: "Execution result exceeds 100KB size limit, may contain excessive data exposure",
+        warnings: ["Result size exceeds safety threshold"],
+      }
+    }
+
     const hasSensitiveData = this.checkForSensitiveData(resultStr)
 
     if (hasSensitiveData) {
@@ -111,6 +143,42 @@ export class BoostSecurityAuditor {
     const hasUnescapedInput = this.checkForUnescapedInput(template)
     if (hasUnescapedInput) {
       warnings.push("Template may have unescaped user input which could lead to injection")
+    }
+
+    return {
+      safe: warnings.length === 0,
+      warnings,
+    }
+  }
+
+  checkParameterInjection(params: Record<string, unknown>): { safe: boolean; warnings: string[] } {
+    const warnings: string[] = []
+
+    const shellMetacharacters = [
+      { pattern: /;/, desc: "semicolon (;) - shell command separator" },
+      { pattern: /\|/, desc: "pipe (|) - shell pipe operator" },
+      { pattern: /&&/, desc: "double ampersand (&&) - shell AND operator" },
+      { pattern: /\$\(/, desc: "dollar-paren ($() - shell command substitution" },
+      { pattern: /`/, desc: "backtick (`) - shell command substitution" },
+    ]
+
+    const pathTraversalPatterns = [
+      { pattern: /\.\.\//, desc: "path traversal pattern (../)" },
+      { pattern: /\.\.\\/, desc: "path traversal pattern (..\\)" },
+    ]
+
+    for (const [key, value] of Object.entries(params)) {
+      if (typeof value !== "string") continue
+      for (const { pattern, desc } of shellMetacharacters) {
+        if (pattern.test(value)) {
+          warnings.push(`Parameter '${key}' contains ${desc}`)
+        }
+      }
+      for (const { pattern, desc } of pathTraversalPatterns) {
+        if (pattern.test(value)) {
+          warnings.push(`Parameter '${key}' contains ${desc}`)
+        }
+      }
     }
 
     return {
@@ -185,6 +253,12 @@ export class BoostSecurityAuditor {
       /secret[_-]?key\s*[:=]\s*['"]?[A-Za-z0-9]{16,}['"]?/i,
       /Bearer\s+[A-Za-z0-9\-._~+/]+=*/i,
       /sk-[a-zA-Z0-9]{20,}/,
+      /sk-f648[a-zA-Z0-9]{20,}/,
+      /ghp_[a-zA-Z0-9]{36}/,
+      /glpat-[a-zA-Z0-9\-]{20,}/,
+      /AKIA[A-Z0-9]{16}/,
+      /-----BEGIN\s+EC\s+PRIVATE\s+KEY-----/i,
+      /-----BEGIN\s+DSA\s+PRIVATE\s+KEY-----/i,
     ]
 
     for (const pattern of sensitivePatterns) {

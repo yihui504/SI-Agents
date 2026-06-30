@@ -26,6 +26,8 @@ export const SIAgentsConfigSchema = z.object({
     config_path: z.string().optional(),
     enabled: z.boolean().default(true),
     observe_only: z.boolean().default(false),
+    strict_mode: z.boolean().optional(),
+    rule_details_url: z.string().optional(),
     allow: z.object({
       tools: z.array(z.string()).optional(),
       paths: z.array(z.string()).optional(),
@@ -65,6 +67,16 @@ export const SIAgentsConfigSchema = z.object({
   rate_limit: z.object({
     max_calls_per_window: z.number().default(100),
     window_seconds: z.number().default(60),
+  }).optional(),
+  persistence: z.object({
+    enabled: z.boolean().default(false),
+    dir: z.string().optional(),
+  }).optional(),
+  opentelemetry: z.object({
+    enabled: z.boolean().default(false),
+    endpoint: z.string().optional(),
+    headers: z.record(z.string()).optional(),
+    serviceName: z.string().optional(),
   }).optional(),
 })
 export type SIAgentsConfig = z.infer<typeof SIAgentsConfigSchema>

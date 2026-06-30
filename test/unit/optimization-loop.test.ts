@@ -94,7 +94,7 @@ describe("OptimizationLoop", () => {
   describe("run", () => {
     it("should run all rounds when not converging", async () => {
       const loop = new OptimizationLoop(mockOptimizer, mockVerifier, testBaseline, defaultConfig)
-      const result = await loop.run()
+      const result = await loop.run("/tmp/test-skill-dir")
 
       expect(result.rounds.length).toBe(3)
       expect(result.proposalId).toBeDefined()
@@ -114,7 +114,7 @@ describe("OptimizationLoop", () => {
         convergenceThreshold: 0.95,
       })
 
-      const result = await loop.run()
+      const result = await loop.run("/tmp/test-skill-dir")
 
       expect(result.rounds.length).toBe(1)
       expect(loop.wasStopped()).toBe(true)
@@ -130,7 +130,7 @@ describe("OptimizationLoop", () => {
       })
 
       const loop = new OptimizationLoop(optimizer, mockVerifier, testBaseline, defaultConfig)
-      const result = await loop.run()
+      const result = await loop.run("/tmp/test-skill-dir")
 
       expect(result.bestRound).toBe(2)
       expect(result.finalScore).toBe(0.8)
@@ -144,14 +144,14 @@ describe("OptimizationLoop", () => {
       }
 
       const loop = new OptimizationLoop(mockOptimizer, mockVerifier, testBaseline, config)
-      await loop.run()
+      await loop.run("/tmp/test-skill-dir")
 
       expect(onRoundComplete).toHaveBeenCalledTimes(3)
     })
 
     it("should set securityApproved to true when all rounds pass", async () => {
       const loop = new OptimizationLoop(mockOptimizer, mockVerifier, testBaseline, defaultConfig)
-      const result = await loop.run()
+      const result = await loop.run("/tmp/test-skill-dir")
 
       expect(result.securityApproved).toBe(true)
     })
@@ -166,7 +166,7 @@ describe("OptimizationLoop", () => {
       })
 
       const loop = new OptimizationLoop(mockOptimizer, blockingVerifier, testBaseline, defaultConfig)
-      const result = await loop.run()
+      const result = await loop.run("/tmp/test-skill-dir")
 
       expect(result.rounds.every(r => r.securityAuditResult === "blocked")).toBe(true)
       expect(result.securityApproved).toBe(false)
@@ -188,7 +188,7 @@ describe("OptimizationLoop", () => {
       }
 
       const loop = new OptimizationLoop(mockOptimizer, blockingVerifier, testBaseline, config)
-      const result = await loop.run()
+      const result = await loop.run("/tmp/test-skill-dir")
 
       expect(result.rounds.length).toBe(1)
       expect(loop.wasStopped()).toBe(true)
@@ -210,7 +210,7 @@ describe("OptimizationLoop", () => {
       }
 
       const loop = new OptimizationLoop(mockOptimizer, blockingVerifier, testBaseline, config)
-      const result = await loop.run()
+      const result = await loop.run("/tmp/test-skill-dir")
 
       expect(result.rounds.length).toBe(3)
     })
@@ -223,7 +223,7 @@ describe("OptimizationLoop", () => {
       })
 
       const loop = new OptimizationLoop(mockOptimizer, warningVerifier, testBaseline, defaultConfig)
-      const result = await loop.run()
+      const result = await loop.run("/tmp/test-skill-dir")
 
       expect(result.rounds.every(r => r.securityAuditResult === "warning")).toBe(true)
       expect(result.securityApproved).toBe(true)
@@ -233,7 +233,7 @@ describe("OptimizationLoop", () => {
   describe("getters", () => {
     it("should return correct rounds", async () => {
       const loop = new OptimizationLoop(mockOptimizer, mockVerifier, testBaseline, defaultConfig)
-      await loop.run()
+      await loop.run("/tmp/test-skill-dir")
 
       const rounds = loop.getRounds()
       expect(rounds.length).toBe(3)
@@ -248,7 +248,7 @@ describe("OptimizationLoop", () => {
       })
 
       const loop = new OptimizationLoop(optimizer, mockVerifier, testBaseline, defaultConfig)
-      await loop.run()
+      await loop.run("/tmp/test-skill-dir")
 
       expect(loop.getBestRound()).toBe(2)
       expect(loop.getBestScore()).toBe(0.9)
@@ -268,7 +268,7 @@ describe("OptimizationLoop", () => {
       })
 
       const loop = new OptimizationLoop(optimizer, partialBlockingVerifier, testBaseline, defaultConfig)
-      await loop.run()
+      await loop.run("/tmp/test-skill-dir")
 
       // Best round should be one of the passing rounds
       expect(loop.getBestRound()).toBeGreaterThan(0)

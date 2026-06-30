@@ -4,6 +4,7 @@ const DEFAULT_ALIASES: Record<string, string> = {
   write_file: "write",
   edit_file: "edit",
   read_file: "read",
+  list_directory: "read",
   spawn: "sessions_spawn",
   patch: "edit",
   terminal: "exec",

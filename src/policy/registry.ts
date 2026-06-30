@@ -13,6 +13,7 @@ export class PolicyRegistry {
   getEnabledPolicies(): Policy[] {
     return this.entries
       .filter((e) => e.enabled)
+      .sort((a, b) => (a.order ?? 100) - (b.order ?? 100))
       .map((e) => this.instances.get(e.name))
       .filter((p): p is Policy => p !== undefined)
   }
@@ -35,6 +36,6 @@ export class PolicyRegistry {
   }
 
   getEntries(): PolicyRegistryEntry[] {
-    return [...this.entries]
+    return [...this.entries].sort((a, b) => (a.order ?? 100) - (b.order ?? 100))
   }
 }

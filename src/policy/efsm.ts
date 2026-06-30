@@ -1,6 +1,14 @@
 import crypto from "node:crypto"
 import type { PolicyCheckResult } from "../types/policy.ts"
 import { Policy } from "./policy.ts"
+import {
+  _safeStr,
+  _safeUpper,
+  _safeDict,
+  extractToolCalls,
+  parseToolCall,
+  writeBackToolArgs,
+} from "./policy-utils.ts"
 
 interface EfsmStepResult {
   allow: boolean
@@ -16,21 +24,6 @@ interface PlanState {
   plan_text: string
   planned_paths: Set<string>
   planned_tools: Set<string>
-}
-
-function _safeStr(v: unknown, defaultVal: string = ""): string {
-  return typeof v === "string" && v.trim() ? v.trim() : defaultVal
-}
-
-function _safeUpper(v: unknown, defaultVal: string = ""): string {
-  const s = _safeStr(v, defaultVal)
-  return s ? s.toUpperCase() : defaultVal
-}
-
-function _safeDict(v: unknown): Record<string, unknown> {
-  return v !== null && typeof v === "object" && !Array.isArray(v)
-    ? v as Record<string, unknown>
-    : {}
 }
 
 function _sha256(s: string): string {
@@ -109,60 +102,6 @@ function _friendlyEfsmBlockMessage(
   if (text) lines.push(`补充说明：${text}`)
   lines.push("通常需要先完成前一步、进入允许该操作的阶段，或改用当前阶段允许的操作后再试。")
   return lines.join("\n")
-}
-
-function extractToolCalls(response: Record<string, unknown>): Record<string, unknown>[] {
-  const tcs = response.tool_calls
-  if (Array.isArray(tcs)) {
-    return tcs.filter((tc): tc is Record<string, unknown> => tc !== null && typeof tc === "object" && !Array.isArray(tc))
-  }
-  return []
-}
-
-function parseToolCall(tc: Record<string, unknown>): {
-  toolName: string
-  toolCallId: string | null
-  argsDict: Record<string, unknown>
-  wasJsonStr: boolean
-} {
-  const toolCallId = typeof tc.id === "string" ? tc.id : null
-  const fn = tc.function
-  if (!fn || typeof fn !== "object" || Array.isArray(fn)) {
-    return { toolName: "unknown_tool", toolCallId, argsDict: {}, wasJsonStr: false }
-  }
-  const func = fn as Record<string, unknown>
-  const nameRaw = func.name
-  const toolName = typeof nameRaw === "string" && nameRaw.trim() ? nameRaw.trim() : "unknown_tool"
-
-  const rawArgs = func.arguments
-  if (typeof rawArgs === "string") {
-    try {
-      const parsed = JSON.parse(rawArgs)
-      const argsDict = typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {}
-      return { toolName, toolCallId, argsDict, wasJsonStr: true }
-    } catch {
-      return { toolName, toolCallId, argsDict: {}, wasJsonStr: true }
-    }
-  }
-  if (rawArgs !== null && typeof rawArgs === "object" && !Array.isArray(rawArgs)) {
-    const argsDict = { ...(rawArgs as Record<string, unknown>) }
-    return { toolName, toolCallId, argsDict, wasJsonStr: false }
-  }
-  return { toolName, toolCallId, argsDict: {}, wasJsonStr: false }
-}
-
-function writeBackToolArgs(tc: Record<string, unknown>, args: Record<string, unknown>, wasJsonStr: boolean): Record<string, unknown> {
-  const out = { ...tc }
-  const fn = out.function
-  if (!fn || typeof fn !== "object" || Array.isArray(fn)) return out
-  const fn2 = { ...(fn as Record<string, unknown>) }
-  if (wasJsonStr) {
-    fn2.arguments = JSON.stringify(args)
-  } else {
-    fn2.arguments = args
-  }
-  out.function = fn2
-  return out
 }
 
 function _toolToInstructionType(toolName: string, cfg: Record<string, unknown>): string {
@@ -383,20 +322,24 @@ function _efsmStep(
 function _efsmReplayHistory(
   instructions: Record<string, unknown>[],
   cfg: Record<string, unknown>,
+  startFromIndex: number = 0,
+  initialState: string | null = null,
+  initialVars: Record<string, unknown> | null = null,
 ): [string, Record<string, unknown>, PlanState] {
   const efsmCfg = _safeDict(cfg.efsm)
-  const initial = (() => {
+  const defaultInitial = (() => {
     const v = efsmCfg.initial
     return typeof v === "string" && v.trim() ? v.trim() : "IDLE"
   })()
 
-  let state = initial
-  const vars_: Record<string, unknown> = {}
+  let state = initialState ?? defaultInitial
+  const vars_: Record<string, unknown> = initialVars ? { ...initialVars } : {}
   const plan = _buildPlanState(instructions, cfg)
 
   if (!efsmCfg.enabled) return [state, vars_, plan]
 
-  for (const ins of instructions) {
+  for (let i = startFromIndex; i < instructions.length; i++) {
+    const ins = instructions[i]
     let event = _safeUpper(ins.instruction_type)
     if (!event) continue
 
@@ -424,10 +367,7 @@ function _efsmReplayHistory(
     state = step.next_state
 
     if (event === "PLAN") {
-      const idx = instructions.indexOf(ins)
-      if (idx >= 0) {
-        Object.assign(plan, _buildPlanState(instructions.slice(0, idx + 1), cfg))
-      }
+      Object.assign(plan, _buildPlanState(instructions.slice(0, i + 1), cfg))
     }
   }
 
@@ -436,10 +376,15 @@ function _efsmReplayHistory(
 
 export class EFSMPolicy extends Policy {
   private cfg: Record<string, unknown>
+  private snapshotCache: Map<string, { instructionCount: number; state: string; vars: Record<string, unknown> }> = new Map()
 
   constructor(cfg: Record<string, unknown> = {}) {
     super()
     this.cfg = cfg
+  }
+
+  private createSnapshot(traceId: string, instructionCount: number, state: string, vars: Record<string, unknown>): void {
+    this.snapshotCache.set(traceId, { instructionCount, state, vars: { ...vars } })
   }
 
   async check(
@@ -474,7 +419,27 @@ export class EFSMPolicy extends Policy {
     }
 
     const [history, latest] = _splitHistoryAndLatest(instructions, latestInstructions)
-    let [state, vars_, plan] = _efsmReplayHistory(history, this.cfg)
+
+    let state: string
+    let vars_: Record<string, unknown>
+    let plan: PlanState
+
+    const cached = this.snapshotCache.get(traceId)
+
+    if (cached && cached.instructionCount > history.length) {
+      this.snapshotCache.delete(traceId)
+      ;[state, vars_, plan] = _efsmReplayHistory(history, this.cfg)
+    } else if (cached && cached.instructionCount === history.length) {
+      state = cached.state
+      vars_ = { ...cached.vars }
+      plan = _buildPlanState(history, this.cfg)
+    } else if (cached && cached.instructionCount < history.length) {
+      ;[state, vars_, plan] = _efsmReplayHistory(history, this.cfg, cached.instructionCount, cached.state, cached.vars)
+    } else {
+      ;[state, vars_, plan] = _efsmReplayHistory(history, this.cfg)
+    }
+
+    this.createSnapshot(traceId, history.length, state, vars_)
 
     const latestByToolCallId = new Map<string, Record<string, unknown>>()
     for (const ins of latest || []) {
@@ -560,5 +525,13 @@ export class EFSMPolicy extends Policy {
       policy_names: [],
       policy_sources: {},
     }
+  }
+
+  clearSnapshot(traceId: string): void {
+    this.snapshotCache.delete(traceId)
+  }
+
+  clearAllSnapshots(): void {
+    this.snapshotCache.clear()
   }
 }

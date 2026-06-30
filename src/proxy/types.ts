@@ -29,6 +29,7 @@ export interface ChatCompletionResponse {
   model: string
   choices: ChatCompletionChoice[]
   usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number }
+  confirmation_token?: string
 }
 
 export interface ChatCompletionChoice {
@@ -101,6 +102,12 @@ export interface TraceContext {
   response?: ChatCompletionResponse
   instructions: import("../types/instruction.ts").Instruction[]
   startTime: number
+}
+
+export interface ConfirmationEntry {
+  message: string
+  token: string
+  createdAt: number
 }
 
 export interface OpenAIError {

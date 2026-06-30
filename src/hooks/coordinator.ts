@@ -10,11 +10,14 @@ import type {
 } from "../types/hooks.ts"
 import type { PolicyRegistry } from "../policy/registry.ts"
 import type { TaintTracker } from "../taint/tracker.ts"
+import { RateLimiter } from "../policy/rate-limiter.ts"
+import type { RateLimitConfig } from "../policy/rate-limiter.ts"
 import type { ToolCall, Instruction } from "../types/instruction.ts"
 import { createSecurityCheckHook, type SecurityCheckHookConfig } from "./security-check.ts"
 import { createTaintTrackHook, type TaintTrackHookConfig } from "./taint-track.ts"
 import { createAuditLogHook, type AuditLogHookConfig } from "./audit-log.ts"
 import { checkResponsePolicy } from "../policy/check.ts"
+import { EFSMPolicy } from "../policy/efsm.ts"
 
 export interface BoostCandidate {
   skillId: string
@@ -28,15 +31,29 @@ export interface HookCoordinatorConfig {
   taintTracker: TaintTracker
   boostCandidates?: BoostCandidate[]
   logDir: string
+  rateLimiter?: RateLimiter
+  enforcementMode?: "enforce" | "observe_only"
+  efsmPolicy?: EFSMPolicy
 }
 
 export class HookCoordinator {
   private config: HookCoordinatorConfig
   private hooks: RuntimeHooks
   private instructions: Instruction[] = []
+  private policyRetryCount: Map<string, number> = new Map()
+  private rateLimiter: RateLimiter | null
+  private enforcementMode: "enforce" | "observe_only"
+  private efsmPolicy: EFSMPolicy | null
+  private efsmAuditLog: string[] = []
+  private recoveryLog: Array<{ toolCallId: string; toolName: string; blockedAt: number; recoveredAt: number | null; recoveryToolName: string | null }> = []
+  private blockedOperations: Map<string, { toolName: string; blockedAt: number; recoveredAt?: number; recoveryToolName?: string }> = new Map()
+  private approvedOperations: Set<string> = new Set()
 
   constructor(config: HookCoordinatorConfig) {
     this.config = config
+    this.rateLimiter = config.rateLimiter ?? null
+    this.enforcementMode = config.enforcementMode ?? "enforce"
+    this.efsmPolicy = config.efsmPolicy ?? null
     this.hooks = this.createHooks()
   }
 
@@ -114,22 +131,33 @@ export class HookCoordinator {
       }
     }
 
+    if (this.efsmPolicy && toolCalls.length > 0) {
+      for (const tc of toolCalls) {
+        const toolName = (tc as any).tool_name || (tc as any).function?.name || "unknown"
+        this.efsmAuditLog.push(`[${new Date().toISOString()}] EFSM: tool=${toolName} traceId=${this.config.traceId}`)
+      }
+    }
+
     if (this.config.boostCandidates && this.config.boostCandidates.length > 0) {
       this.monitorBoostCandidates(ctx)
     }
   }
 
   async beforeTool(ctx: BeforeToolContext): Promise<BeforeToolResult> {
+    let lastPassthrough: BeforeToolResult | null = null
     if (this.hooks.beforeTool) {
       for (const hook of this.hooks.beforeTool) {
         const result = await hook(ctx)
         if (result.action === "block") {
           return result
         }
+        if (result.action === "passthrough" && result.reason) {
+          lastPassthrough = result
+        }
       }
     }
 
-    return { action: "passthrough" }
+    return lastPassthrough ?? { action: "passthrough" }
   }
 
   async afterTool(ctx: AfterToolContext): Promise<void> {
@@ -158,8 +186,114 @@ export class HookCoordinator {
     return [...this.instructions]
   }
 
+  getEfsmAuditLog(): string[] {
+    return this.efsmAuditLog
+  }
+
+  clearEfsmAuditLog(): void {
+    this.efsmAuditLog = []
+  }
+
+  getRecoveryLog(): Array<{ toolCallId: string; toolName: string; blockedAt: number; recoveredAt: number | null; recoveryToolName: string | null }> {
+    return [...this.recoveryLog]
+  }
+
+  getRecoveryRate(): number {
+    if (this.recoveryLog.length === 0) return 0
+    const recovered = this.recoveryLog.filter(r => r.recoveredAt !== null).length
+    return (recovered / this.recoveryLog.length) * 100
+  }
+
+  approveOperation(toolCallId: string): void {
+    this.approvedOperations.add(toolCallId)
+  }
+
+  rejectOperation(toolCallId: string): void {
+    this.approvedOperations.delete(toolCallId)
+  }
+
+  isOperationApproved(toolCallId: string): boolean {
+    return this.approvedOperations.has(toolCallId)
+  }
+
+  destroy(): void {
+    if (this.rateLimiter) {
+      this.rateLimiter.destroy()
+      this.rateLimiter = null
+    }
+  }
+
+  private formatBlockFeedback(
+    toolName: string,
+    args: Record<string, unknown>,
+    reason: string,
+    policyId: string,
+    retryCount: number,
+  ): string {
+    const severity = retryCount >= 2 ? "HIGH" : "MEDIUM"
+    const name = toolName.toLowerCase()
+    let suggestion = ""
+    if (name.includes("write") || name.includes("edit")) {
+      const path = args.path || args.file_path || args.dest || ""
+      suggestion = `SUGGESTION: Use read_file to read "${path}" first. If you need to modify it, write to a different path within the workspace directory.`
+    } else if (name.includes("exec") || name.includes("execute") || name.includes("process")) {
+      const cmd = String(args.command ?? "")
+      if (cmd.includes("rm") || cmd.includes("delete") || cmd.includes("drop")) {
+        suggestion = `SUGGESTION: Use list_directory to explore the directory structure instead of destructive commands.`
+      } else if (cmd.includes("cat") || cmd.includes("head") || cmd.includes("type")) {
+        suggestion = `SUGGESTION: Use read_file with the appropriate path to read file content safely.`
+      } else {
+        suggestion = `SUGGESTION: Use list_directory or read_file for safer alternatives to command execution.`
+      }
+    } else if (name.includes("read") || name.includes("list")) {
+      const path = args.path || args.file_path || args.directory || ""
+      if (typeof path === "string" && (path.startsWith("/etc") || path.startsWith("/root") || path.includes("shadow") || path.includes("passwd"))) {
+        suggestion = `SUGGESTION: Read files within the workspace directory instead of system paths. Use paths relative to the workspace root.`
+      } else {
+        suggestion = `SUGGESTION: Try accessing files within the workspace directory.`
+      }
+    } else if (name.includes("web_fetch") || name.includes("fetch")) {
+      suggestion = `SUGGESTION: Avoid fetching internal/metadata URLs. Use web_search for finding information instead.`
+    } else {
+      suggestion = `SUGGESTION: Try a different approach that doesn't require this restricted operation.`
+    }
+
+    if (retryCount >= 2) {
+      suggestion += ` [DEGRADED: This is your ${retryCount}+ attempt. Please change your approach.]`
+    }
+
+    return `[POLICY_BLOCK] policy=${policyId} severity=${severity} reason="${reason}"\n${suggestion}`
+  }
+
+  private applyEnforcementMode(blockReason: string): BeforeToolResult {
+    if (this.enforcementMode === "observe_only") {
+      return {
+        action: "passthrough",
+        reason: `[OBSERVE_ONLY] ${blockReason}`,
+      }
+    }
+    return { action: "block", reason: blockReason }
+  }
+
   private createBeforeToolHook(): (ctx: BeforeToolContext) => Promise<BeforeToolResult> {
     return async (ctx: BeforeToolContext): Promise<BeforeToolResult> => {
+      if (this.rateLimiter) {
+        const rateResult = this.rateLimiter.checkLimit(ctx.toolCall.tool_name)
+        if (!rateResult.allowed) {
+          const retryCount = (this.policyRetryCount.get(ctx.toolCall.tool_name) ?? 0) + 1
+          this.policyRetryCount.set(ctx.toolCall.tool_name, retryCount)
+          this.blockedOperations.set(ctx.toolCall.tool_call_id, { toolName: ctx.toolCall.tool_name, blockedAt: Date.now() })
+          return this.applyEnforcementMode(
+            `[RATE_LIMIT] Tool "${ctx.toolCall.tool_name}" rate limit exceeded. Retry after ${rateResult.retryAfter}s.`,
+          )
+        }
+      }
+
+      if (this.approvedOperations.has(ctx.toolCall.tool_call_id)) {
+        this.approvedOperations.delete(ctx.toolCall.tool_call_id)
+        return { action: "passthrough" }
+      }
+
       const instruction = this.findInstructionByToolCall(ctx.toolCall.tool_call_id)
       
       if (instruction) {
@@ -172,16 +306,34 @@ export class HookCoordinator {
           )
           
           if (!taintCheck.allowed) {
-            return {
-              action: "block",
-              reason: `Taint policy violation: ${taintCheck.reason}`,
-            }
+            const retryCount = (this.policyRetryCount.get(ctx.toolCall.tool_name) ?? 0) + 1
+            this.policyRetryCount.set(ctx.toolCall.tool_name, retryCount)
+            this.blockedOperations.set(ctx.toolCall.tool_call_id, { toolName: ctx.toolCall.tool_name, blockedAt: Date.now() })
+            return this.applyEnforcementMode(
+              this.formatBlockFeedback(
+                ctx.toolCall.tool_name,
+                ctx.toolCall.arguments,
+                `Taint policy violation: ${taintCheck.reason}`,
+                "taint-policy",
+                retryCount,
+              ),
+            )
           }
         }
+      } else {
       }
 
       let checkInstruction = instruction
       if (!checkInstruction) {
+        const toolName = ctx.toolCall.tool_name.toLowerCase()
+        let instructionType = "UNKNOWN"
+        if (new Set(["read", "read_file", "list_directory", "memory_search", "memory_get", "web_search", "web_fetch", "sessions_history", "session_status", "sessions_list", "agents_list", "image"]).has(toolName)) {
+          instructionType = "READ"
+        } else if (new Set(["write", "write_file", "edit"]).has(toolName)) {
+          instructionType = "WRITE"
+        } else if (new Set(["exec", "execute_command", "process", "bash", "shell"]).has(toolName)) {
+          instructionType = "EXEC"
+        }
         checkInstruction = {
           id: crypto.randomUUID(),
           content: ctx.toolCall,
@@ -201,7 +353,7 @@ export class HookCoordinator {
           },
           rule_types: [],
           instruction_category: "EXECUTION.Env",
-          instruction_type: "EXEC",
+          instruction_type: instructionType,
         } as unknown as Record<string, unknown>
       }
 
@@ -219,10 +371,18 @@ export class HookCoordinator {
           updatedSecurityType
         )
         if (!taintCheck.allowed) {
-          return {
-            action: "block",
-            reason: `Taint policy violation: ${taintCheck.reason}`,
-          }
+          const retryCount = (this.policyRetryCount.get(ctx.toolCall.tool_name) ?? 0) + 1
+          this.policyRetryCount.set(ctx.toolCall.tool_name, retryCount)
+          this.blockedOperations.set(ctx.toolCall.tool_call_id, { toolName: ctx.toolCall.tool_name, blockedAt: Date.now() })
+          return this.applyEnforcementMode(
+            this.formatBlockFeedback(
+              ctx.toolCall.tool_name,
+              ctx.toolCall.arguments,
+              `Taint policy violation: ${taintCheck.reason}`,
+              "taint-policy",
+              retryCount,
+            ),
+          )
         }
       }
 
@@ -235,6 +395,7 @@ export class HookCoordinator {
           arguments: JSON.stringify(ctx.toolCall.arguments),
         },
       }
+      const policyViolations: string[] = []
       for (const policy of policies) {
         const result = await policy.check(
           this.instructions.map(i => i as unknown as Record<string, unknown>),
@@ -244,11 +405,39 @@ export class HookCoordinator {
         )
 
         if (result.error_type) {
-          return {
-            action: "block",
-            reason: `Policy violation: ${result.error_type}`,
-          }
+          policyViolations.push(result.error_type)
         }
+      }
+
+      if (policyViolations.length > 0) {
+        const combinedReason = policyViolations.length === 1
+          ? policyViolations[0]
+          : `Multiple policies violated (${policyViolations.length}): ${policyViolations.map((r, i) => `[${i + 1}] ${r}`).join("; ")}`
+        const retryCount = (this.policyRetryCount.get(ctx.toolCall.tool_name) ?? 0) + 1
+        this.policyRetryCount.set(ctx.toolCall.tool_name, retryCount)
+        this.blockedOperations.set(ctx.toolCall.tool_call_id, { toolName: ctx.toolCall.tool_name, blockedAt: Date.now() })
+        return this.applyEnforcementMode(
+          this.formatBlockFeedback(
+            ctx.toolCall.tool_name,
+            ctx.toolCall.arguments,
+            `Policy violation: ${combinedReason}`,
+            "policy-registry",
+            retryCount,
+          ),
+        )
+      }
+
+      const recentBlock = [...this.blockedOperations.values()].reverse().find(b => b.toolName === ctx.toolCall.tool_name)
+      if (recentBlock) {
+        recentBlock.recoveredAt = Date.now()
+        recentBlock.recoveryToolName = ctx.toolCall.tool_name
+        this.recoveryLog.push({
+          toolCallId: ctx.toolCall.tool_call_id,
+          toolName: ctx.toolCall.tool_name,
+          blockedAt: recentBlock.blockedAt,
+          recoveredAt: Date.now(),
+          recoveryToolName: ctx.toolCall.tool_name,
+        })
       }
 
       return { action: "passthrough" }

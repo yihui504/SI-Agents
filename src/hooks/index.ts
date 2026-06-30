@@ -1,4 +1,5 @@
 export { createSecurityCheckHook, type SecurityCheckHookConfig } from "./security-check.ts"
 export { createTaintTrackHook, type TaintTrackHookConfig } from "./taint-track.ts"
 export { createAuditLogHook, type AuditLogHookConfig, type AuditLogEntry } from "./audit-log.ts"
+export { AuditLogger, type AuditEvent, type AuditLoggerConfig, type AuditSeverity, audit, getDefaultAuditLogger, setDefaultAuditLogger } from "./structured-audit.ts"
 export { HookCoordinator, type HookCoordinatorConfig, type BoostCandidate } from "./coordinator.ts"

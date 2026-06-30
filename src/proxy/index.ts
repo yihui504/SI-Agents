@@ -3,7 +3,7 @@ export type { ProxyServerConfig } from "./server.ts"
 export { ModelRouter } from "./model-router.ts"
 export { executePreCall, parseTraceIdFromMetadata } from "./pre-call.ts"
 export { executePostCall, extractToolCallsFromResponse, hasToolCalls } from "./post-call.ts"
-export { processStreamingResponse, createStreamingChunk } from "./streaming.ts"
+export { processStreamingResponse, createStreamingChunk, checkStreamingContent, STREAMING_DANGEROUS_PATTERNS } from "./streaming.ts"
 export {
   isPolicyConfirmationReply,
   extractConfirmationReply,

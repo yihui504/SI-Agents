@@ -13,3 +13,5 @@ export type {
 } from "./optimization-trace.ts"
 
 export { UnifiedTraceManager, createUnifiedTraceManager } from "./unified-trace.ts"
+
+export { OTLPExporter, type OTLPConfig } from "./otel-exporter.ts"

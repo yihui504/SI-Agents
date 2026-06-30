@@ -14,6 +14,8 @@ export const DEFAULT_CONFIG: SIAgentsConfig = {
   policy: {
     enabled: true,
     observe_only: false,
+    strict_mode: false,
+    rule_details_url: "http://43.161.233.143:5173/",
   },
   taint: {
     enabled: true,
@@ -25,4 +27,6 @@ export const DEFAULT_CONFIG: SIAgentsConfig = {
   security: {
     security_dir: "~/.skvm/security",
   },
+  persistence: { enabled: false },
+  opentelemetry: { enabled: false },
 }
