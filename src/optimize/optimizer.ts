@@ -1,4 +1,4 @@
-import { mkdir, readdir, copyFile, stat, rm } from "node:fs/promises"
+import { mkdir, readdir, copyFile, stat, rm, readFile } from "node:fs/promises"
 import path from "node:path"
 import { homedir } from "node:os"
 import type {
@@ -315,14 +315,62 @@ If you determine the skill needs no changes, write:
     }
   }
 
+  /**
+   * Metric 反映 SKILL.md 质量（vs 历史"工具数量越多越好"的反向设计）。
+   * 维度：风险低 + taint 少 + 结构化好 + 工具适度（1-5 个为佳，0 或 10+ 都扣分）。
+   * 与 SkVM task-level metric 仍有差距（这里仍是文件层），但能区分高质量 vs 低质量 SKILL.md。
+   */
   private async evaluateRound(skillDir: string): Promise<number> {
     const baseline = await this.scanner.scan(skillDir)
-    const riskPenalty = baseline.riskLevel === "high" ? 0.3 : baseline.riskLevel === "medium" ? 0.1 : 0
-    const toolCallScore = Math.min(baseline.toolCalls.length / 10, 1)
-    const pathScore = Math.min(baseline.pathPatterns.length / 5, 1)
+
+    // riskScore: 风险越低分越高（high=0, medium=0.5, low=1）
+    const riskScore =
+      baseline.riskLevel === "high" ? 0 : baseline.riskLevel === "medium" ? 0.5 : 1
+
+    // taintScore: taint flows 越少分越高
     const taintScore = 1 - Math.min(baseline.taintFlows.length / 5, 1)
 
-    return Math.max(0, Math.min(1, (toolCallScore + pathScore + taintScore) / 3 - riskPenalty))
+    // structureScore: SKILL.md 标准化 section 数（# title, ## Workflow, ## Output, ## Security, ## Severity 等）
+    const structureScore = await this.evaluateStructure(skillDir)
+
+    // toolBalanceScore: 1-5 个工具为佳（太少=未指导 agent，太多=过度复杂）
+    const toolCount = baseline.toolCalls.length
+    const toolBalanceScore =
+      toolCount === 0
+        ? 0.3
+        : toolCount <= 5
+          ? 1
+          : Math.max(0, 1 - (toolCount - 5) / 10)
+
+    const score =
+      riskScore * 0.35 +
+      structureScore * 0.35 +
+      taintScore * 0.2 +
+      toolBalanceScore * 0.1
+
+    return Math.max(0, Math.min(1, score))
+  }
+
+  private async evaluateStructure(skillDir: string): Promise<number> {
+    try {
+      const skillContent = await readFile(path.join(skillDir, "SKILL.md"), "utf-8")
+      const standardSections = [
+        /^#\s+\S/m, // 主标题
+        /^##\s+Workflow/mi,
+        /^##\s+Output/mi,
+        /^##\s+(Security|Constraints)/mi,
+        /^##\s+(Severity|Priorit)/mi,
+        /^##\s+(Method|Steps|Process)/mi,
+        /^##\s+(Vulnerability|Categories|Types)/mi,
+      ]
+      let count = 0
+      for (const re of standardSections) {
+        if (re.test(skillContent)) count++
+      }
+      return Math.min(1, count / 4) // 4 个 section 即满分
+    } catch {
+      return 0
+    }
   }
 
   private determineAuditResult(verifyResult: VerifyResult): "passed" | "blocked" | "warning" {

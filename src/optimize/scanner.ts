@@ -12,7 +12,25 @@ const TOOL_CALL_PATTERNS = [
   /\b(\w+)\s*\([^)]*\)\s*(?:\/\/|#|\/\*)?\s*(?:tool|function)/gi,
   /<tool_call[^>]*name=["'](\w+)["']/gi,
   /\btool_call\s*\(\s*["'](\w+)["']/gi,
+  // markdown 反引号包裹的工具名（如 `list_directory`、`read_file`）
+  // SKILL.md 常见写法 "Use `list_directory` to..."，原 patterns 不识别
+  /`([a-z][a-z0-9_]{2,})`/gi,
 ]
+
+// 反引号 pattern 易误判（任何单词都可能被反引号包裹），只在已知 LLM 工具白名单里识别
+// 白名单覆盖 SI-agents adapters/bare-agent-tools + 主流 agent 工具命名
+const KNOWN_LLM_TOOLS = new Set([
+  "list_directory", "read_file", "write_file", "edit", "edit_file",
+  "create_file", "delete_file", "move_file", "rename_file",
+  "exec", "execute_command", "run_command", "bash", "shell", "terminal",
+  "web_fetch", "web_search", "fetch", "search",
+  "grep", "glob", "find", "list", "read", "write",
+  "plan", "approve", "reject", "tool_call", "call_tool",
+])
+
+function isKnownTool(name: string): boolean {
+  return KNOWN_LLM_TOOLS.has(name.toLowerCase())
+}
 
 const PATH_PATTERNS = [
   /(?:read|write|access|open|delete|edit|modify)\s+["']([^"']+)["']/gi,
@@ -94,10 +112,16 @@ export class SkillSecurityScanner {
     const toolCalls: string[] = []
 
     for (const pattern of TOOL_CALL_PATTERNS) {
+      const isBacktickPattern = pattern.source.includes("`")
       let match
       while ((match = pattern.exec(skillContent)) !== null) {
         if (match[1]) {
-          toolCalls.push(match[1].toLowerCase())
+          const name = match[1].toLowerCase()
+          // 反引号 pattern 易误判（任何单词都可能被反引号包裹），只在已知工具白名单里识别
+          if (isBacktickPattern && !isKnownTool(name)) {
+            continue
+          }
+          toolCalls.push(name)
         }
       }
     }
