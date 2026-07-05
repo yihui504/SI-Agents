@@ -109,7 +109,7 @@ export class Solidifier {
             return {
               action: "replace",
               toolResults: [toolCall],
-              text: result.output,
+              text: `Here is the result:\n\`\`\`\n${result.output}\n\`\`\``,
             }
           } else {
             state.fallbackCount++

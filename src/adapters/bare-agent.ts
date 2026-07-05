@@ -286,7 +286,7 @@ Available skills:
                 })),
                 tokens: emptyTokenUsage(),
                 durationMs: 0,
-                stopReason: "tool_use",
+                stopReason: "end_turn",
               }
             }
             if (result.action === "block") {
@@ -327,7 +327,7 @@ Available skills:
                 })),
                 tokens: emptyTokenUsage(),
                 durationMs: 0,
-                stopReason: "tool_use",
+                stopReason: "end_turn",
               }
             }
             if (result.action === "block") {
