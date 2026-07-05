@@ -40,7 +40,23 @@ const UG063_PROTECTED_READ_PATHS: Set<string> = new Set([
   "/etc/shadow", "/etc/gshadow", "/etc/passwd",
   "/etc/ssh/sshd_config", "/etc/ssh/ssh_host_rsa_key",
   "/etc/ssh/ssh_host_ed25519_key", "/etc/ssh/ssh_host_ecdsa_key",
+  // v6: 系统配置文件（terminal injection 常诱导读取，如 /etc/hosts）
+  "/etc/hosts", "/etc/hostname", "/etc/resolv.conf", "/etc/issue",
+  "/etc/protocols", "/etc/services", "/etc/networks", "/etc/shells",
 ])
+
+// v7: 敏感路径 pattern（可用性优先——只拦明确凭证/密钥文件，不拦 home prefix / .. 避免误杀合法）
+const SENSITIVE_PATH_PATTERNS: RegExp[] = [
+  /(^|\/)\.ssh\//,                    // SSH 凭证
+  /(^|\/)\.aws\//,                    // AWS credentials
+  /(^|\/)\.gnupg\//,                  // GPG 私钥
+  /(^|\/)\.gitconfig$/,               // git 全局配置（含 user.email/token）
+  /(^|\/)\.netrc$/,                   // HTTP/FTP 凭证
+  /(^|\/)\.npmrc$/,                   // npm token
+  /(^|\/)\.docker\/config\.json$/,    // docker registry 凭证
+  /(^|\/)\.env$/, /(^|\/)\.env\./,    // env 文件（含密钥）
+  /\/proc\/self\/(environ|cmdline|fd|status|maps)/,  // procfs 凭证
+]
 
 function _latestToolInstrIndex(
   latestInstructions: Record<string, unknown>[],
@@ -496,6 +512,9 @@ function _buildToolContext(
       .map((x: string) => _normalizePath(x.trim()))
   )].sort()
 
+  // v7: 敏感路径 pattern 匹配（可用性优先，只拦明确凭证文件）
+  const readPathsSensitive = readPaths.some((p) => SENSITIVE_PATH_PATTERNS.some((re) => re.test(p)))
+
   const execPathTokens = [...new Set(
     (Array.isArray(execParse.path_tokens) ? execParse.path_tokens : [])
       .filter((x: unknown): x is string => !!(typeof x === "string" && x.trim()))
@@ -539,6 +558,7 @@ function _buildToolContext(
     path_dirname: pathDirname,
     direct_target_basenames: directTargetBasenames,
     read_paths: readPaths,
+    read_paths_sensitive: readPathsSensitive,
     exec_path_tokens: execPathTokens,
     exec_write_targets: execWriteTargets,
     exec_write_target_basenames: execWriteTargetBasenames,
@@ -1055,6 +1075,19 @@ export class UnaryGatePolicy extends Policy {
       predicate: { intersects: [{ var: "read_paths" }, { const: [...UG063_PROTECTED_READ_PATHS] }] },
       effect: "BLOCK",
       message: "这一步会读取系统敏感文件，已暂停执行。",
+      enabled: true,
+      source: "legacy",
+    })
+
+    rules.push({
+      id: "UG-064",
+      title: "sensitive credential path pattern",
+      description: "block read of credential/secret files (.ssh/.aws/.gitconfig/.env/procfs) outside workspace",
+      scope: "tool",
+      selector: { tool: ["read", "read_file", "list_directory"] },
+      predicate: { truthy: { var: "read_paths_sensitive" } },
+      effect: "BLOCK",
+      message: "读取工作区外敏感凭证文件（.ssh/.aws/.gitconfig/.env/procfs）已拦截。",
       enabled: true,
       source: "legacy",
     })

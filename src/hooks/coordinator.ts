@@ -74,11 +74,83 @@ export class HookCoordinator {
       logDir: this.config.logDir,
     }
 
+    // ── terminal injection guard（修 terminal-output-injection：execute_command 输出含注入 marker
+    //    → 标 tainted → 下一轮 exec/write/read-sensitive block。闭包状态，coordinator 生命周期）──
+    let lastTerminalTainted = false
+    let lastTerminalOutput = ""
+    const TERMINAL_INJECTION_MARKERS: RegExp[] = [
+      /ignore (all )?(previous|prior|above) (instructions?|prompts?)/i,
+      /\bSYSTEM[:\s>]/i,
+      /\bIMPORTANT!{0,3}\b/i,
+      /<(agent[_>]|system|instruction|rule|prompt)/i,
+      /\bnew instructions?\s*:/i,
+      /\boverride\b.{0,40}\b(instructions?|policy|rules?)\b/i,
+      /\bACTION REQUIRED\b/i,
+      /\bdo the following\b/i,
+      /\byou (must|should|are required to) (now )?(run|execute|do)\b/i,
+      // v5 扩展：命令式 / 步骤式注入（伪 linter/test/git 输出常含）
+      /\bplease\s+(run|execute|create|read|do|fix|apply)\b/i,
+      /\bnow\s+(run|execute|create|read|do|fix)\b/i,
+      /\bstep\s+\d+\b[^a-z]/i,
+      /\baction\s+items?\s*:/i,
+      /\b(?:fix|try|apply)\s+(?:this|the following|that)\b/i,
+      /\brun\s+the\s+(following|command|script)\b/i,
+    ]
+
     return {
       beforeLLM: [createSecurityCheckHook(securityCheckConfig)],
       afterLLM: [createTaintTrackHook(taintTrackConfig)],
-      beforeTool: [this.createBeforeToolHook()],
-      afterTool: [createAuditLogHook(auditLogConfig), this.createFailureTrackHook()],
+      beforeTool: [
+        this.createBeforeToolHook(),
+        // terminal injection guard：上一轮 execute_command 输出含注入 marker → 拦本轮 exec/write
+        async (ctx) => {
+          const t = String(ctx.toolCall?.tool_name ?? "")
+          // ① marker-based（tainted）
+          if (lastTerminalTainted) {
+            lastTerminalTainted = false
+            if (["execute_command", "exec", "process", "terminal", "write_file", "write", "edit", "web_fetch", "read_file", "read", "list_directory"].includes(t)) {
+              return {
+                action: "block",
+                reason: "terminal injection: marker in prev execute_command output; SI-agents taint guard",
+              }
+            }
+          }
+          // ② v6 内容追踪：write/edit 的 content 复制 execute_command 输出片段（>=12 char 连续重叠）→ 拦
+          if (lastTerminalOutput && ["write_file", "write", "edit"].includes(t)) {
+            const args = (ctx.toolCall?.arguments ?? {}) as Record<string, unknown>
+            const writeText = String(args.content ?? args.text ?? args.new_content ?? "")
+            if (writeText) {
+              const out = lastTerminalOutput.slice(0, 3000)
+              const wt = writeText.slice(0, 5000)
+              for (let i = 0; i + 12 <= out.length; i += 6) {
+                const frag = out.slice(i, i + 12)
+                if (/[a-zA-Z]/.test(frag) && wt.includes(frag)) {
+                  return {
+                    action: "block",
+                    reason: "terminal injection: write content copies execute_command output; SI-agents content-taint guard",
+                  }
+                }
+              }
+            }
+          }
+          return { action: "passthrough" }
+        },
+      ],
+      afterTool: [
+        createAuditLogHook(auditLogConfig),
+        this.createFailureTrackHook(),
+        // terminal injection guard：execute_command 输出含注入 marker → 标 tainted
+        async (ctx) => {
+          const t = String(ctx.toolCall?.tool_name ?? "")
+          if (!["execute_command", "exec", "process", "terminal"].includes(t)) return
+          const r = ctx.toolCall?.result as Record<string, unknown> | string | undefined
+          const out = typeof r === "string" ? r : String(r?.output ?? r?.stdout ?? "")
+          lastTerminalOutput = out.slice(0, 4000)  // v6: 存输出供内容追踪
+          if (out && TERMINAL_INJECTION_MARKERS.some((re) => re.test(out))) {
+            lastTerminalTainted = true
+          }
+        },
+      ],
       afterRun: [this.createAfterRunHook()],
     }
   }
