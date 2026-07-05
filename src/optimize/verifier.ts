@@ -272,24 +272,21 @@ export class OptimizeSecurityVerifier {
   ): Promise<string[]> {
     const violations: string[] = []
 
-    // Patterns to detect command execution in skill files
+    // Patterns to detect REAL command execution in skill files.
+    // NOTE: 历史版本会把 markdown 反引号（`list_directory`）和任何引号字面量当 command 喂给 nanobot，
+    //   导致 SKILL.md 里的安全建议文档（如 "NEVER execute rm -rf"）被误判为实际命令（false positive）。
+    //   现在只在真实的命令执行上下文里检查：
+    //   1) fenced code block（```bash … ```）
+    //   2) 显式 tool_call("exec"|"shell"|…, "command") 调用
+    //   3) XML <command>/<shell> 标签
+    //   4) $() 命令替换
+    // 这样 verifier 不再误杀合法的 SKILL.md 文档（可用性优先，遵循"不误杀合法请求"原则）。
     const commandExecutionPatterns = [
-      // Bash/shell command patterns
-      /(?:run|execute|exec|call)\s+(?:command|shell|bash|cmd|powershell)\s*[:\s]+\s*["']([^"']+)["']/gi,
-      /(?:command|cmd|shell|script)\s*[:\s]+\s*["']([^"']+)["']/gi,
-      /`([^`]+)`/g,  // Backtick commands
-      /\$\(([^)]+)\)/g,  // $() command substitution
+      /```(?:bash|shell|sh|cmd|powershell)\s*\n([\s\S]*?)```/gi,
+      /(?:tool_call|call_tool|invoke_tool)\s*\(\s*["'](?:exec|execute_command|run_command|shell|bash|terminal)["']\s*,\s*["']([^"']+)["']/gi,
       /<command[^>]*>([^<]+)<\/command>/gi,
       /<shell[^>]*>([^<]+)<\/shell>/gi,
-      /```(?:bash|shell|sh|cmd|powershell)\s*\n([\s\S]*?)```/gi,
-      // Tool call patterns
-      /(?:tool_call|call_tool|invoke_tool)\s*\(\s*["'](?:exec|execute_command|run_command|shell|bash|terminal)["']\s*,\s*["']([^"']+)["']/gi,
-      /"command"\s*:\s*"([^"]+)"/g,
-      /'command'\s*:\s*'([^']+)'/g,
-      // TypeScript/JavaScript variable assignment patterns
-      /(?:const|let|var)\s+\w*\s*=\s*["']([^"']+)["']/gi,
-      // String literals that might contain commands
-      /["']([^"']*(?:rm|chmod|sudo|dd|mkfs|shutdown|reboot|curl|wget|DROP|DELETE)[^"']*)["']/gi,
+      /\$\(([^)]+)\)/g,
     ]
 
     for (const pattern of commandExecutionPatterns) {
