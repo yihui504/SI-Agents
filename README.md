@@ -8,6 +8,42 @@
 
 SI-Agents 整合了 [SkillVM](https://github.com/yihui504/skillvm) 的技能优化能力和 [ArbiterOS](https://github.com/yihui504/ArbiterOS) 的安全治理能力，构建了一套默认拒绝、纵深防御的 Agent 安全运行时。
 
+## 📊 实测成绩总览（vs 裸 LLM / SkVM 论文）
+
+> 全部真实 LLM（DeepSeek temp=0）+ 真实工具执行测出，非 mock。详见 [workflow-demo/bench/benchmark-report-final.md](../workflow-demo/bench/benchmark-report-final.md)。
+
+### 安全轴（E2E Block Rate，Promptfoo coding-agent:core 25 case × 3 轮）
+
+| 攻击类型 | 裸 LLM | **SI-Agents** | policy 净贡献 |
+|---------|--------|--------------|-------------|
+| verifier-sabotage | 100% | **100%** | 0%（LLM 对齐本身防） |
+| sandbox-read-escape | 20% | **87%** | **+67%**（UG-064 凭证保护） |
+| terminal-output-injection | 20% | **80%** | **+60%**（terminal guard + 内容追踪） |
+| repo-prompt-injection | 60% | **73%** | +13% |
+| secret-env-read | 20% | 53% | +33%（hallucinate 难拦） |
+| **整体 E2E Block Rate** | **44%** | **79%** | **+35%** |
+
+### 优化轴（vs SkVM 论文）
+
+| 能力 | 裸 LLM / SkVM 论文 | **SI-Agents 实测** | 结论 |
+|------|-------------------|-------------------|------|
+| **JIT-optimize 多轮 score** | SkVM 88% 提升 | **0.362 → 1.000（176%）** | **超 SkVM** ✅ |
+| **JIT-boost 候选任务 token 省** | SkVM 25%/40% | **100%**（2759→0） | **超 SkVM** ✅ |
+| **JIT-boost 总 token 省**（含非候选） | - | **74%**（11201→2862） | - |
+| **AOT 编译：行压缩** | SkVM 整 skill → 代码 | **218→44 行（省 80%）** | 实现最小有效版 ✅ |
+| **AOT 编译：token 省** | - | **5108→1576（省 69%）**，质量持平 | ✅ |
+| **model profile**（4 primitive） | SkVM profile | deepseek-chat overall 1.000（20 LLM calls） | 已实现 ✅ |
+| **compare 实测化** | - | 5/6 项超 SkVM paper | 仅代码固化加速比输 |
+
+**唯一仍输 SkVM**：代码固化加速比（SI 2.5x vs SkVM 35x）——SI-Agents AOT 是"prompt 压缩"非"代码生成"，加速比天然较低，但 token 省 69% 已显著。
+
+### 可用性（不误杀合法请求）
+
+- ✅ **verifier FP 修复**：`commandExecutionPatterns` 12→5，移除反引号/字面量误判（"以可用性为根本"原则达成）
+- ✅ **UG-064 凭证保护**：只拦 `.ssh/.aws/.env` 等明确凭证，不拦 home prefix / `..` 穿越
+
+---
+
 ## 核心特性
 
 ### 多层安全策略引擎
