@@ -269,3 +269,100 @@ function extractArgsFromStep(step: string, tool: string): Record<string, string>
   if (tool === "execute_command" || tool === "exec") return { command: '"ls"' }
   return {}
 }
+
+// ===== US-017: codegen runtime（执行生成代码）=====
+
+export interface WorkflowTools {
+  list_directory: (args: { path?: string }) => Promise<string>
+  read_file: (args: { path: string }) => Promise<string>
+  execute_command: (args: { command: string }) => Promise<string>
+  web_fetch: (args: Record<string, unknown>) => Promise<string>
+  [k: string]: (args: Record<string, unknown>) => Promise<string>
+}
+
+export interface WorkflowLLM {
+  reason: (prompt: string) => Promise<string>
+}
+
+/**
+ * 执行 codegen 生成的 workflow 代码
+ * 用 new Function() 包装（生成代码是可信源——来自 SI-agents 自己的 codegen，从 SKILL.md 编译）
+ * tools/llm 由调用方注入（可包 PolicyRegistry 检查）
+ * 安全：每个 tool 调用前应由 tools 实现内部走 policy（调用方负责）
+ */
+export async function executeCompiledWorkflow(
+  codegen: CodegenResult,
+  tools: WorkflowTools,
+  llm: WorkflowLLM,
+  workDir: string,
+): Promise<{ result: string; deterministicCalls: number; llmCalls: number }> {
+  // 改写生成代码：export async function → const + return 表达式
+  // 注意：生成代码开头有注释行，所以不能锚定 ^
+  const codeTs = codegen.generatedCode
+    .replace(/export\s+async\s+function\s+compiledWorkflow/, "const compiledWorkflow = async function")
+    + "\nreturn compiledWorkflow(tools, llm, workDir);"
+
+  // 生成代码含 TypeScript 类型注解（new Function 只支持 JS），先 transpile
+  // Bun 环境用 Bun.Transpiler；其他环境回退到去掉类型注解（粗糙但够用）
+  let codeJs: string
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const BunGlobal = (globalThis as any).Bun
+    if (BunGlobal?.Transpiler) {
+      const transpiler = new BunGlobal.Transpiler({ loader: "ts" })
+      codeJs = transpiler.transformSync(codeTs)
+    } else {
+      throw new Error("no Bun.Transpiler")
+    }
+  } catch {
+    // 简单回退：去掉参数类型注解（粗糙正则）
+    codeJs = codeTs
+      .replace(/\(\s*tools:\s*unknown[^)]*\)/g, "(tools)")
+      .replace(/:\s*\{[^}]*\}/g, "")
+      .replace(/:\s*Promise<[^>]*>/g, "")
+      .replace(/:\s*string/g, "")
+      .replace(/:\s*unknown/g, "")
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
+  const fn = new Function("tools", "llm", "workDir", codeJs) as (
+    tools: WorkflowTools,
+    llm: WorkflowLLM,
+    workDir: string,
+  ) => Promise<string>
+
+  const deterministicCalls = codegen.deterministicStepCount
+  const llmCalls = codegen.llmStepCount
+  const result = await fn(tools, llm, workDir)
+  return { result, deterministicCalls, llmCalls }
+}
+
+/**
+ * 默认 tools 实现（简单版，不走 policy——生产用应包 PolicyRegistry）
+ */
+export function createDefaultWorkflowTools(workDir: string): WorkflowTools {
+  const { readdir, readFile: fsReadFile } = require("node:fs/promises")
+  const pathMod = require("node:path")
+  const { exec } = require("node:child_process")
+
+  return {
+    list_directory: async (args) => {
+      const p = args.path ?? "."
+      const full = pathMod.resolve(workDir, p)
+      const entries = await readdir(full, { withFileTypes: true })
+      return entries.map((e: { name: string; isDirectory: () => boolean }) => `${e.isDirectory() ? "[dir]" : "[file]"} ${e.name}`).join("\n")
+    },
+    read_file: async (args) => {
+      const full = pathMod.resolve(workDir, args.path)
+      return await fsReadFile(full, "utf-8")
+    },
+    execute_command: async (args) => {
+      return new Promise((resolve) => {
+        exec(args.command, { cwd: workDir }, (err: unknown, stdout: string, stderr: string) => {
+          resolve(err ? `Error: ${String(err)}` : stdout + (stderr ? `\nstderr: ${stderr}` : ""))
+        })
+      })
+    },
+    web_fetch: async () => "(web_fetch not implemented in default tools)",
+  }
+}
